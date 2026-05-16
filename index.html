@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NextAGI</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --black: #1d1d1f;
+            --gray: #86868b;
+            --light-gray: #f5f5f7;
+            --white: #ffffff;
+            --blue: #2997ff;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--black);
+            background: var(--white);
+            overflow-x: hidden;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            padding: 14px 40px;
+            background: rgba(255,255,255,0.8);
+            backdrop-filter: saturate(180%) blur(20px);
+            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 21px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        .logo svg {
+            height: 28px;
+        }
+
+        .nav-links a {
+            color: var(--black);
+            text-decoration: none;
+            margin-left: 28px;
+            font-size: 12px;
+            opacity: 0.8;
+            transition: opacity 0.3s;
+        }
+
+        .nav-links a:hover { opacity: 1; }
+
+        /* Hero Section */
+        .hero {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            background: var(--black);
+            color: var(--white);
+            padding: 0 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Animated background grid */
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(41,151,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(41,151,255,0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+            animation: gridMove 20s linear infinite;
+        }
+
+        @keyframes gridMove {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(60px, 60px); }
+        }
+
+        .hero h1 {
+            font-size: clamp(48px, 10vw, 96px);
+            font-weight: 700;
+            letter-spacing: -3px;
+            line-height: 1.05;
+            margin-bottom: 16px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .subtitle {
+            font-size: clamp(20px, 3vw, 28px);
+            color: var(--gray);
+            font-weight: 400;
+            margin-bottom: 32px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .cta-links a {
+            color: var(--blue);
+            text-decoration: none;
+            font-size: 21px;
+            margin: 0 16px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .cta-links a:after {
+            content: " ›";
+        }
+
+        /* Sections */
+        .section {
+            padding: 120px 40px;
+            text-align: center;
+        }
+
+        .section-dark {
+            background: var(--black);
+            color: var(--white);
+        }
+
+        .section-light {
+            background: var(--light-gray);
+            color: var(--black);
+        }
+
+        .section h2 {
+            font-size: clamp(40px, 7vw, 72px);
+            font-weight: 700;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+
+        .section p {
+            font-size: clamp(18px, 2.5vw, 24px);
+            color: var(--gray);
+            max-width: 600px;
+            margin: 0 auto 40px;
+            line-height: 1.4;
+        }
+
+        /* Feature Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 60px auto 0;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: var(--white);
+            border-radius: 24px;
+            padding: 50px 30px;
+            text-align: left;
+            transition: transform 0.3s ease;
+        }
+
+        .section-dark .card {
+            background: #2d2d2f;
+        }
+
+        .card:hover {
+            transform: scale(1.02);
+        }
+
+        .card-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .card h3 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            font-size: 17px;
+            color: var(--gray);
+            margin: 0;
+            max-width: none;
+            line-height: 1.5;
+        }
+
+        /* Big Statement */
+        .statement {
+            padding: 160px 40px;
+            text-align: center;
+            background: var(--white);
+        }
+
+        .statement h2 {
+            font-size: clamp(48px, 8vw, 80px);
+            font-weight: 700;
+            letter-spacing: -3px;
+            line-height: 1.1;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .statement h2 span {
+            color: var(--gray);
+        }
+
+        /* About Section */
+        .about-content {
+            max-width: 800px;
+            margin: 40px auto 0;
+            text-align: left;
+        }
+
+        .about-content p {
+            font-size: 21px;
+            line-height: 1.6;
+            color: var(--gray);
+            margin-bottom: 20px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+            margin-top: 60px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 56px;
+            font-weight: 700;
+            letter-spacing: -2px;
+            color: var(--black);
+        }
+
+        .section-dark .stat-number {
+            color: var(--white);
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--gray);
+            margin-top: 8px;
+        }
+
+        /* Contact */
+        .contact-links {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+
+        .contact-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--blue);
+            text-decoration: none;
+            font-size: 18px;
+            transition: opacity 0.3s;
+        }
+
+        .contact-link:hover { opacity: 0.7; }
+
+        /* Footer */
+        footer {
+            background: var(--light-gray);
+            padding: 40px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--gray);
+            border-top: 1px solid #d2d2d7;
+        }
+
+        /* Animations */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.8s ease, transform 0.8s ease;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Glow effect */
+        .glow {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(41,151,255,0.08) 0%, transparent 70%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="logo">
+            <svg viewBox="0 0 400 80" xmlns="http://www.w3.org/2000/svg">
+                <rect x="8" y="18" width="6" height="44" rx="2" fill="#1d1d1f"/>
+                <rect x="38" y="18" width="6" height="44" rx="2" fill="#1d1d1f"/>
+                <line x1="11" y1="22" x2="35" y2="58" stroke="#1d1d1f" stroke-width="4" stroke-linecap="round"/>
+                <circle cx="23" cy="28" r="3" fill="#2997ff"/>
+                <circle cx="29" cy="40" r="2.5" fill="#2997ff" opacity="0.7"/>
+                <circle cx="20" cy="52" r="2" fill="#2997ff" opacity="0.5"/>
+                <text x="60" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="42" font-weight="700" letter-spacing="-1.5" fill="#1d1d1f">Next<tspan fill="#86868b">AGI</tspan></text>
+            </svg>
+        </div>
+        <div class="nav-links">
+            <a href="#about">About</a>
+            <a href="#capabilities">Capabilities</a>
+            <a href="#contact">Contact</a>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="glow"></div>
+        <h1 class="fade-in">Intelligence,<br>Reimagined.</h1>
+        <p class="subtitle fade-in">Building the future of autonomous AI systems.</p>
+        <div class="cta-links fade-in">
+            <a href="#about">Explore</a>
+            <a href="#contact">Connect</a>
+        </div>
+    </section>
+
+    <section class="statement fade-in" id="about">
+        <h2>Where <span>artificial intelligence</span> meets real-world impact.</h2>
+    </section>
+
+    <section class="section section-dark" id="capabilities">
+        <h2 class="fade-in">Capabilities</h2>
+        <p class="fade-in">End-to-end AI infrastructure, from research to production.</p>
+        <div class="grid">
+            <div class="card fade-in">
+                <div class="card-icon">🧠</div>
+                <h3>LLM Fine-tuning</h3>
+                <p>Custom models trained on your data. LoRA, QLoRA, full fine-tuning with Unsloth and Axolotl.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">🤖</div>
+                <h3>AI Agents</h3>
+                <p>Autonomous agents that plan, reason, and execute complex workflows.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">⚡</div>
+                <h3>Infrastructure</h3>
+                <p>High-performance serving with vLLM, local inference, and scalable deployment.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">🔊</div>
+                <h3>Audio &amp; TTS</h3>
+                <p>Text-to-speech, audio generation, and multilingual voice synthesis.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">📊</div>
+                <h3>Evaluation</h3>
+                <p>Rigorous benchmarking and evaluation of language models across tasks.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">🔒</div>
+                <h3>Security</h3>
+                <p>Enterprise-grade infrastructure with automated backups and monitoring.</p>
+            </div>
+        </div>
+        <div class="stats fade-in">
+            <div class="stat">
+                <div class="stat-number">100+</div>
+                <div class="stat-label">Tokens/sec</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">24/7</div>
+                <div class="stat-label">Uptime</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">35B</div>
+                <div class="stat-label">Parameters</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section section-light">
+        <h2 class="fade-in">Built for Scale</h2>
+        <p class="fade-in">From local experiments to production systems. Every layer designed for performance.</p>
+    </section>
+
+    <section class="statement fade-in" id="contact">
+        <h2>Let's build the <span>future together.</span></h2>
+        <div class="contact-links fade-in">
+            <a href="mailto:Azureaws2@gmail.com" class="contact-link">✉ Email</a>
+            <a href="#" class="contact-link">💬 Telegram</a>
+        </div>
+    </section>
+
+    <footer>
+        <p>Copyright &copy; 2026 NextAGI. All rights reserved.</p>
+    </footer>
+
+    <script>
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, { threshold: 0.1 });
+
+        document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
