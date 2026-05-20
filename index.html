@@ -330,6 +330,120 @@
             transform: translate(-50%, -50%);
             pointer-events: none;
         }
+
+        /* Terminal Window */
+        .terminal-window {
+            max-width: 800px;
+            margin: 40px auto 0;
+            background: #1a1a2e;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            text-align: left;
+        }
+
+        .terminal-header {
+            background: #16162a;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .terminal-dot.red { background: #ff5f56; }
+        .terminal-dot.yellow { background: #ffbd2e; }
+        .terminal-dot.green { background: #27c93f; }
+
+        .terminal-title {
+            color: var(--gray);
+            font-size: 13px;
+            margin-left: 8px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        .terminal-body {
+            padding: 20px;
+            font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            min-height: 300px;
+        }
+
+        .terminal-line {
+            margin-bottom: 2px;
+        }
+
+        .prompt {
+            color: #27c93f;
+        }
+
+        .cmd {
+            color: #e0e0e0;
+        }
+
+        .output {
+            color: #b0b0b0;
+        }
+
+        .output.highlight {
+            color: #ffbd2e;
+        }
+
+        .ai {
+            color: #2997ff;
+        }
+
+        .ai.success {
+            color: #27c93f;
+        }
+
+        .cursor {
+            animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        /* Pentest Features */
+        .pentest-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 30px;
+            max-width: 900px;
+            margin: 60px auto 0;
+            padding: 0 20px;
+        }
+
+        .feature {
+            text-align: center;
+        }
+
+        .feature-icon {
+            font-size: 40px;
+            margin-bottom: 16px;
+        }
+
+        .feature h4 {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--white);
+            margin-bottom: 8px;
+        }
+
+        .feature p {
+            font-size: 15px;
+            color: var(--gray);
+            margin: 0;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -346,6 +460,7 @@
         <div class="nav-links">
             <a href="#about">About</a>
             <a href="#capabilities">Capabilities</a>
+            <a href="#pentest">Pentest</a>
             <a href="#contact">Contact</a>
         </div>
     </nav>
@@ -399,9 +514,9 @@
                 <p>Rigorous benchmarking and evaluation of language models across tasks.</p>
             </div>
             <div class="card fade-in">
-                <div class="card-icon">🔒</div>
-                <h3>Security</h3>
-                <p>Enterprise-grade infrastructure with automated backups and monitoring.</p>
+                <div class="card-icon">🛡️</div>
+                <h3>AI Penetration Testing</h3>
+                <p>AI-powered cyber security assessments. Automated vulnerability scanning, exploit chaining, and red team operations.</p>
             </div>
         </div>
         <div class="stats fade-in">
@@ -423,6 +538,57 @@
     <section class="section section-light">
         <h2 class="fade-in">Built for Scale</h2>
         <p class="fade-in">From local experiments to production systems. Every layer designed for performance.</p>
+    </section>
+
+    <!-- AI Penetration Testing Section -->
+    <section class="section section-dark" id="pentest">
+        <h2 class="fade-in">AI Penetration Testing</h2>
+        <p class="fade-in">Autonomous red team operations powered by AI. Scan, exploit, report — all automated.</p>
+        <div class="terminal-window fade-in">
+            <div class="terminal-header">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">nextagi-pentest — AI Red Team Agent</span>
+            </div>
+            <div class="terminal-body" id="terminal-body">
+                <div class="terminal-line"><span class="prompt">┌─ pentest@ai ~ $</span> <span class="cmd">nmap -sV --script vuln target.com</span></div>
+                <div class="terminal-line"><span class="output">Starting Nmap 7.94 ( https://nmap.org )</span></div>
+                <div class="terminal-line"><span class="output">PORT      STATE  SERVICE     VERSION</span></div>
+                <div class="terminal-line"><span class="output highlight">22/tcp    open   ssh         OpenSSH 8.9</span></div>
+                <div class="terminal-line"><span class="output highlight">80/tcp    open   http        Apache 2.4.54</span></div>
+                <div class="terminal-line"><span class="output highlight">443/tcp   open   https       nginx 1.18.0</span></div>
+                <div class="terminal-line"><span class="output highlight">3306/tcp  open   mysql       MySQL 8.0.32</span></div>
+                <div class="terminal-line"><span class="ai">[AI] Found 4 open ports. Cross-referencing CVE database...</span></div>
+                <div class="terminal-line"><span class="ai">[AI] ⚠️  Apache 2.4.54 → CVE-2023-25690 (RCE) — severity: HIGH</span></div>
+                <div class="terminal-line"><span class="ai">[AI] ⚠️  MySQL 8.0.32 → CVE-2024-20960 (privilege escalation)</span></div>
+                <div class="terminal-line"><span class="ai">[AI] Generating exploit chain: Apache RCE → MySQL priv esc → root</span></div>
+                <div class="terminal-line"><span class="ai success">[AI] ✅ Report generated: 3 vulns found, 2 exploitable, risk score: 8.7/10</span></div>
+                <div class="terminal-line"><span class="prompt">┌─ pentest@ai ~ $</span> <span class="cursor">▊</span></div>
+            </div>
+        </div>
+        <div class="pentest-features fade-in">
+            <div class="feature">
+                <div class="feature-icon">🔍</div>
+                <h4>Automated Recon</h4>
+                <p>Port scanning, service detection, and attack surface mapping</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🎯</div>
+                <h4>Exploit Chaining</h4>
+                <p>AI-driven exploit selection and automated chaining</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📋</div>
+                <h4>Report Generation</h4>
+                <p>Detailed findings with risk scores and remediation steps</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🔄</div>
+                <h4>Continuous Monitoring</h4>
+                <p>24/7 vulnerability scanning and alerting</p>
+            </div>
+        </div>
     </section>
 
     <section class="statement fade-in" id="contact">
