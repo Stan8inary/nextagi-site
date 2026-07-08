@@ -275,26 +275,134 @@
             margin-top: 8px;
         }
 
-        /* Contact */
-        .contact-links {
-            display: flex;
-            justify-content: center;
-            gap: 40px;
-            margin-top: 40px;
-            flex-wrap: wrap;
+        /* Contact Section */
+        .contact-section {
+            padding: 120px 40px;
+            background: var(--white);
+            text-align: center;
         }
 
-        .contact-link {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            color: var(--blue);
-            text-decoration: none;
-            font-size: 18px;
-            transition: opacity 0.3s;
+        .contact-section h2 {
+            font-size: clamp(40px, 7vw, 72px);
+            font-weight: 700;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 16px;
         }
 
-        .contact-link:hover { opacity: 0.7; }
+        .contact-section h2 span {
+            color: var(--gray);
+        }
+
+        .contact-subtitle {
+            font-size: clamp(18px, 2.5vw, 24px);
+            color: var(--gray);
+            max-width: 600px;
+            margin: 0 auto 60px;
+            line-height: 1.4;
+        }
+
+        .contact-form {
+            max-width: 620px;
+            margin: 0 auto;
+            text-align: left;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--black);
+            margin-bottom: 8px;
+        }
+
+        .form-group label .optional {
+            color: var(--gray);
+            font-weight: 400;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 17px;
+            font-family: inherit;
+            border: 1px solid #d2d2d7;
+            border-radius: 12px;
+            background: var(--light-gray);
+            color: var(--black);
+            transition: border-color 0.3s, box-shadow 0.3s;
+            outline: none;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 4px rgba(41,151,255,0.1);
+            background: var(--white);
+        }
+
+        .form-group input::placeholder,
+        .form-group textarea::placeholder {
+            color: #c7c7cc;
+        }
+
+        .form-group textarea {
+            min-height: 160px;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        .form-submit {
+            text-align: center;
+            margin-top: 32px;
+        }
+
+        .form-submit button {
+            display: inline-block;
+            padding: 16px 48px;
+            font-size: 17px;
+            font-weight: 500;
+            font-family: inherit;
+            color: var(--white);
+            background: var(--blue);
+            border: none;
+            border-radius: 980px;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.1s;
+        }
+
+        .form-submit button:hover { background: #0077ed; }
+
+        .form-submit button:active { transform: scale(0.98); }
+
+        .form-submit button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .form-message {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 17px;
+            min-height: 24px;
+        }
+
+        .form-message.success { color: #34c759; }
+
+        .form-message.error { color: #ff3b30; }
+
+        @media (max-width: 600px) {
+            .form-row { grid-template-columns: 1fr; gap: 0; }
+        }
 
         /* Footer */
         footer {
@@ -591,8 +699,34 @@
         </div>
     </section>
 
-    <section class="statement fade-in" id="contact">
+    <section class="contact-section fade-in" id="contact">
         <h2>Let's build the <span>future together.</span></h2>
+        <p class="contact-subtitle">Have a project in mind? We'd love to hear from you.</p>
+
+        <form class="contact-form" id="contactForm">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="name">Name</label>
+                    <input type="text" id="name" name="name" placeholder="Your name" required>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" placeholder="you@example.com" required>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="phone">Phone <span class="optional">(optional)</span></label>
+                <input type="tel" id="phone" name="phone" placeholder="+1 (555) 000-0000">
+            </div>
+            <div class="form-group">
+                <label for="message">Business Inquiry</label>
+                <textarea id="message" name="message" placeholder="Tell us about your project, goals, or how we can help..." required></textarea>
+            </div>
+            <div class="form-submit">
+                <button type="submit" id="submitBtn">Send Inquiry</button>
+            </div>
+            <div class="form-message" id="formMessage"></div>
+        </form>
     </section>
 
     <footer>
@@ -618,6 +752,57 @@
                     target.scrollIntoView({ behavior: 'smooth' });
                 }
             });
+        });
+
+        // Contact form handler
+        const form = document.getElementById('contactForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const formMessage = document.getElementById('formMessage');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const name = document.getElementById('name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const phone = document.getElementById('phone').value.trim();
+            const message = document.getElementById('message').value.trim();
+
+            // Basic client-side validation
+            if (!name || !email || !message) {
+                formMessage.textContent = 'Please fill in all required fields.';
+                formMessage.className = 'form-message error';
+                return;
+            }
+
+            // Disable button and show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Sending...';
+            formMessage.textContent = '';
+
+            try {
+                const response = await fetch('/api/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, phone, message })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    formMessage.textContent = "Thank you! We'll get back to you soon.";
+                    formMessage.className = 'form-message success';
+                    form.reset();
+                } else {
+                    formMessage.textContent = data.error || 'Something went wrong. Please try again.';
+                    formMessage.className = 'form-message error';
+                }
+            } catch (err) {
+                formMessage.textContent = 'Network error. Please try again later.';
+                formMessage.className = 'form-message error';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Send Inquiry';
+            }
         });
     </script>
     <!-- Cloudflare Web Analytics -->
