@@ -1,5 +1,5 @@
 name = "www"
-account_id = "982fdf0a67691f5cc01d6918ce69da58"
+account_id = "79e0aef902ca3be626768d584f1198f5"
 main = "src/index.js"
 compatibility_date = "2025-01-29"
 workers_dev = true
@@ -13,12 +13,12 @@ routes = [
 # KV namespaces for rate limiting and contact form submissions
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "ad1ceba5c38c49d2bb12dbf80f4b1b6e"
+id = "67f9355ffaa24265ab058979135e7020"
 
 [[kv_namespaces]]
 binding = "CONTACT_FORMS"
-id = "cfc6b070bb0a43c4addaeace26eab491"
+id = "32d9a1fbdc2e41f0885b7c6141d97856"
 
 [[kv_namespaces]]
 binding = "BRIEFINGS"
-id = "0d7f71da2f33419f9956c85fabe5e3c5"
+id = "8422a493ac7b4d17ab3bd887d9c3b94e"
