@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AppoSight</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --black: #1d1d1f;
+            --gray: #86868b;
+            --light-gray: #f5f5f7;
+            --white: #ffffff;
+            --blue: #2997ff;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--black);
+            background: var(--white);
+            overflow-x: hidden;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            padding: 14px 40px;
+            background: rgba(255,255,255,0.8);
+            backdrop-filter: saturate(180%) blur(20px);
+            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 21px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        .logo svg {
+            height: 32px;
+        }
+
+        /* Hexagon logo animation */
+        @keyframes hexRotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .hex-logo {
+            animation: hexRotate 20s linear infinite;
+            transform-origin: center;
+        }
+
+        .nav-links a {
+            color: var(--black);
+            text-decoration: none;
+            margin-left: 28px;
+            font-size: 12px;
+            opacity: 0.8;
+            transition: opacity 0.3s;
+        }
+
+        .nav-links a:hover { opacity: 1; }
+
+        /* Hero Section */
+        .hero {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            background: var(--black);
+            color: var(--white);
+            padding: 0 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Animated background grid */
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(41,151,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(41,151,255,0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+            animation: gridMove 20s linear infinite;
+        }
+
+        @keyframes gridMove {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(60px, 60px); }
+        }
+
+        .hero h1 {
+            font-size: clamp(48px, 10vw, 96px);
+            font-weight: 700;
+            letter-spacing: -3px;
+            line-height: 1.05;
+            margin-bottom: 16px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .subtitle {
+            font-size: clamp(20px, 3vw, 28px);
+            color: var(--gray);
+            font-weight: 400;
+            margin-bottom: 32px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .cta-links a {
+            color: var(--blue);
+            text-decoration: none;
+            font-size: 21px;
+            margin: 0 16px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .cta-links a:after {
+            content: " >";
+        }
+
+        /* Sections */
+        .section {
+            padding: 120px 40px;
+            text-align: center;
+        }
+
+        .section-dark {
+            background: var(--black);
+            color: var(--white);
+        }
+
+        .section-light {
+            background: var(--light-gray);
+            color: var(--black);
+        }
+
+        .section h2 {
+            font-size: clamp(40px, 7vw, 72px);
+            font-weight: 700;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+
+        .section p {
+            font-size: clamp(18px, 2.5vw, 24px);
+            color: var(--gray);
+            max-width: 600px;
+            margin: 0 auto 40px;
+            line-height: 1.4;
+        }
+
+        /* Feature Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 60px auto 0;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: var(--white);
+            border-radius: 24px;
+            padding: 50px 30px;
+            text-align: left;
+            transition: transform 0.3s ease;
+        }
+
+        .section-dark .card {
+            background: #2d2d2f;
+        }
+
+        .card:hover {
+            transform: scale(1.02);
+        }
+
+        .card-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .card h3 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            font-size: 17px;
+            color: var(--gray);
+            margin: 0;
+            max-width: none;
+            line-height: 1.5;
+        }
+
+        /* Big Statement */
+        .statement {
+            padding: 160px 40px;
+            text-align: center;
+            background: var(--white);
+        }
+
+        .statement h2 {
+            font-size: clamp(48px, 8vw, 80px);
+            font-weight: 700;
+            letter-spacing: -3px;
+            line-height: 1.1;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .statement h2 span {
+            color: var(--gray);
+        }
+
+        /* About Section */
+        .about-content {
+            max-width: 800px;
+            margin: 40px auto 0;
+            text-align: left;
+        }
+
+        .about-content p {
+            font-size: 21px;
+            line-height: 1.6;
+            color: var(--gray);
+            margin-bottom: 20px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+            margin-top: 60px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 56px;
+            font-weight: 700;
+            letter-spacing: -2px;
+            color: var(--black);
+        }
+
+        .section-dark .stat-number {
+            color: var(--white);
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--gray);
+            margin-top: 8px;
+        }
+
+        /* Contact Section */
+        /* Terminal animation */
+        .pentest-terminal {
+            max-width: 700px;
+            margin: 2rem auto 3rem;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            font-family: 'Courier New', monospace;
+        }
+
+        .terminal-header {
+            background: #1a1a2e;
+            padding: 10px 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .terminal-dot.red { background: #ff5f56; }
+        .terminal-dot.yellow { background: #ffbd2e; }
+        .terminal-dot.green { background: #27c93f; }
+
+        .terminal-body {
+            background: #0a0a1a;
+            padding: 20px;
+            min-height: 200px;
+        }
+
+        .terminal-line {
+            margin: 4px 0;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            opacity: 0;
+            animation: terminalFadeIn 0.3s ease forwards;
+        }
+
+        .terminal-line:nth-child(1) { animation-delay: 0.2s; }
+        .terminal-line:nth-child(2) { animation-delay: 0.8s; }
+        .terminal-line:nth-child(3) { animation-delay: 1.4s; }
+        .terminal-line:nth-child(4) { animation-delay: 2.0s; }
+        .terminal-line:nth-child(5) { animation-delay: 2.6s; }
+        .terminal-line:nth-child(6) { animation-delay: 3.2s; }
+        .terminal-line:nth-child(7) { animation-delay: 3.8s; }
+        .terminal-line:nth-child(8) { animation-delay: 4.4s; }
+        .terminal-line:nth-child(9) { animation-delay: 5.0s; }
+        .terminal-line:nth-child(10) { animation-delay: 5.6s; }
+        .terminal-line:nth-child(11) { animation-delay: 6.2s; }
+        .terminal-line:nth-child(12) { animation-delay: 6.8s; }
+        .terminal-line:nth-child(13) { animation-delay: 7.4s; }
+        .terminal-line:nth-child(14) { animation-delay: 8.0s; }
+
+        .terminal-line .prompt {
+            color: #00ff88;
+        }
+
+        .terminal-line .command {
+            color: #00d4ff;
+        }
+
+        .terminal-line .output {
+            color: #aaa;
+        }
+
+        .terminal-line .output.success {
+            color: #00ff88;
+        }
+
+        @keyframes terminalFadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .contact-section {
+            padding: 120px 40px;
+            background: var(--white);
+            text-align: center;
+        }
+
+        .contact-section h2 {
+            font-size: clamp(40px, 7vw, 72px);
+            font-weight: 700;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+
+        .contact-section h2 span {
+            color: var(--gray);
+        }
+
+        .contact-subtitle {
+            font-size: clamp(18px, 2.5vw, 24px);
+            color: var(--gray);
+            max-width: 600px;
+            margin: 0 auto 60px;
+            line-height: 1.4;
+        }
+
+        .contact-form {
+            max-width: 620px;
+            margin: 0 auto;
+            text-align: left;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--black);
+            margin-bottom: 8px;
+        }
+
+        .form-group label .optional {
+            color: var(--gray);
+            font-weight: 400;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 17px;
+            font-family: inherit;
+            border: 1px solid #d2d2d7;
+            border-radius: 12px;
+            background: var(--light-gray);
+            color: var(--black);
+            transition: border-color 0.3s, box-shadow 0.3s;
+            outline: none;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 4px rgba(41,151,255,0.1);
+            background: var(--white);
+        }
+
+        .form-group input::placeholder,
+        .form-group textarea::placeholder {
+            color: #c7c7cc;
+        }
+
+        .form-group textarea {
+            min-height: 160px;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        .form-submit {
+            text-align: center;
+            margin-top: 32px;
+        }
+
+        .form-submit button {
+            display: inline-block;
+            padding: 16px 48px;
+            font-size: 17px;
+            font-weight: 500;
+            font-family: inherit;
+            color: var(--white);
+            background: var(--blue);
+            border: none;
+            border-radius: 980px;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.1s;
+        }
+
+        .form-submit button:hover {
+            background: #0077ed;
+        }
+
+        .form-submit button:active {
+            transform: scale(0.98);
+        }
+
+        .form-submit button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .form-message {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 17px;
+            min-height: 24px;
+        }
+
+        .form-message.success {
+            color: #34c759;
+        }
+
+        .form-message.error {
+            color: #ff3b30;
+        }
+
+        /* Footer */
+        footer {
+            background: var(--light-gray);
+            padding: 40px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--gray);
+            border-top: 1px solid #d2d2d7;
+        }
+
+        /* Animations */
+        .fade-in {
+            opacity: 1;
+            transform: translateY(0);
+            transition: opacity 0.8s ease, transform 0.8s ease;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Glow effect */
+        .glow {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(41,151,255,0.08) 0%, transparent 70%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .form-row {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            nav {
+                padding: 14px 20px;
+            }
+
+            .section, .contact-section {
+                padding: 80px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="logo">
+            <svg viewBox="0 0 400 80" xmlns="http://www.w3.org/2000/svg">
+                <g transform="translate(30, 40)">
+                    <polygon points="0,-22 19,-11 19,11 0,22 -19,11 -19,-11" fill="none" stroke="#2997ff" stroke-width="2.5" class="hex-logo"/>
+                    <polygon points="0,-11 9.5,-5.5 9.5,5.5 0,11 -9.5,5.5 -9.5,-5.5" fill="#2997ff" opacity="0.3"/>
+                </g>
+                <text x="70" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="42" font-weight="700" letter-spacing="-1.5" fill="#1d1d1f">Appo<tspan fill="#2997ff">Sight</tspan></text>
+            </svg>
+        </div>
+        <div class="nav-links">
+            <a href="#about">About</a>
+            <a href="#capabilities">Capabilities</a>
+            <a href="#pentest">Pentest</a>
+            <a href="#contact">Contact</a>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="glow"></div>
+        <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" style="width: 80px; height: 80px; margin-bottom: 2rem; position: relative; z-index: 1;">
+            <polygon points="60,10 105,35 105,85 60,110 15,85 15,35" fill="none" stroke="#2997ff" stroke-width="3" class="hex-logo"/>
+            <polygon points="60,30 87,45 87,75 60,90 33,75 33,45" fill="#2997ff" opacity="0.2"/>
+            <polygon points="60,50 73,57 73,73 60,80 47,73 47,57" fill="#2997ff" opacity="0.4"/>
+        </svg>
+        <h1 class="fade-in">Intelligence,<br>Reimagined.</h1>
+        <p class="subtitle fade-in">Building the future of autonomous AI systems.</p>
+        <div class="cta-links fade-in">
+            <a href="#about">Explore</a>
+            <a href="#contact">Connect</a>
+        </div>
+    </section>
+
+    <section class="statement fade-in" id="about">
+        <h2>Where <span>artificial intelligence</span> meets real-world impact.</h2>
+    </section>
+
+    <section class="section section-dark" id="capabilities">
+        <h2 class="fade-in">Capabilities</h2>
+        <p class="fade-in">End-to-end AI infrastructure, from research to production.</p>
+        <div class="grid">
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f9e0;</div>
+                <h3>LLM Fine-tuning</h3>
+                <p>Custom models trained on your data. LoRA, QLoRA, full fine-tuning with Unsloth and Axolotl.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f916;</div>
+                <h3>AI Agents</h3>
+                <p>Autonomous agents that plan, reason, and execute complex workflows.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x26a1;</div>
+                <h3>Infrastructure</h3>
+                <p>High-performance serving with vLLM, local inference, and scalable deployment.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f50a;</div>
+                <h3>Audio &amp; TTS</h3>
+                <p>Text-to-speech, audio generation, and multilingual voice synthesis.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f4ca;</div>
+                <h3>Evaluation</h3>
+                <p>Rigorous benchmarking and evaluation of language models across tasks.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f512;</div>
+                <h3>Security</h3>
+                <p>Enterprise-grade infrastructure with automated backups and monitoring.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="section section-light">
+        <h2 class="fade-in">Built for Scale</h2>
+        <p class="fade-in">From local experiments to production systems. Every layer designed for performance.</p>
+    </section>
+
+    <section class="section section-dark" id="pentest">
+        <h2 class="fade-in">AI Penetration Testing</h2>
+        <p class="fade-in">Autonomous red team operations powered by AI agents.</p>
+        <div class="pentest-terminal fade-in">
+            <div class="terminal-header">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span>ai-pentest-agent</span>
+            </div>
+            <div class="terminal-body" id="terminalBody">
+                <div class="terminal-line"><span class="prompt">agent@apposight:~$</span> <span class="command" id="cmd0">recon --target target.com --scan full</span></div>
+                <div class="terminal-line"><span class="output">[+] Scanning 1000 ports on target.com...</span></div>
+                <div class="terminal-line"><span class="output">[+] Open ports: 22, 80, 443, 8080, 3306</span></div>
+                <div class="terminal-line"><span class="prompt">agent@apposight:~$</span> <span class="command" id="cmd1">fingerprint --ports 22,80,443,8080,3306</span></div>
+                <div class="terminal-line"><span class="output">[+] SSH 22: OpenSSH 8.9 (Ubuntu 22.04)</span></div>
+                <div class="terminal-line"><span class="output">[+] HTTP 80: Apache 2.4.54</span></div>
+                <div class="terminal-line"><span class="output">[+] HTTPS 443: Nginx 1.18.0</span></div>
+                <div class="terminal-line"><span class="output">[+] HTTP 8080: Tomcat 9.0.65</span></div>
+                <div class="terminal-line"><span class="output">[+] MySQL 3306: 8.0.32</span></div>
+                <div class="terminal-line"><span class="prompt">agent@apposight:~$</span> <span class="command" id="cmd2">exploit --chain --depth 3</span></div>
+                <div class="terminal-line"><span class="output">[+] CVE-2023-44487: Path traversal on Tomcat</span></div>
+                <div class="terminal-line"><span class="output">[+] Lateral movement: SSH key found → DB server</span></div>
+                <div class="terminal-line"><span class="output">[+] Privilege escalation: kernel exploit → root</span></div>
+                <div class="terminal-line"><span class="output success">[✓] Assessment complete. 3 critical, 5 high findings.</span></div>
+            </div>
+        </div>
+        <div class="grid">
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f50d;</div>
+                <h3>Automated Recon</h3>
+                <p>Subdomain enumeration, port scanning, and service fingerprinting with AI-driven target prioritization.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f4a5;</div>
+                <h3>Exploit Chaining</h3>
+                <p>AI agents that chain vulnerabilities together to achieve deeper access and demonstrate real-world impact.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f4cb;</div>
+                <h3>Report Generation</h3>
+                <p>Automated vulnerability reports with risk scoring, remediation guidance, and executive summaries.</p>
+            </div>
+            <div class="card fade-in">
+                <div class="card-icon">&#x1f50d;</div>
+                <h3>Continuous Monitoring</h3>
+                <p>Ongoing threat detection and security posture assessment with real-time alerting.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="contact-section fade-in" id="contact">
+        <h2>Let's build the <span>future together.</span></h2>
+        <p class="contact-subtitle">Have a project in mind? We'd love to hear from you.</p>
+
+        <form class="contact-form" id="contactForm">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="name">Name</label>
+                    <input type="text" id="name" name="name" placeholder="Your name" required>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" placeholder="you@example.com" required>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="phone">Phone <span class="optional">(optional)</span></label>
+                <input type="tel" id="phone" name="phone" placeholder="+1 (555) 000-0000">
+            </div>
+            <div class="form-group">
+                <label for="message">Business Inquiry</label>
+                <textarea id="message" name="message" placeholder="Tell us about your project, goals, or how we can help..." required></textarea>
+            </div>
+            <div class="form-submit">
+                <button type="submit" id="submitBtn">Send Inquiry</button>
+            </div>
+            <div class="form-message" id="formMessage"></div>
+        </form>
+    </section>
+
+    <footer>
+        <p>Copyright &copy; 2026 AppoSight. All rights reserved.</p>
+    </footer>
+
+    <script>
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, { threshold: 0.1 });
+
+        document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+        // Fallback: make all elements visible after 2s if observer didn't trigger
+        setTimeout(() => {
+            document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible'));
+        }, 2000);
+
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth' });
+                }
+            });
+        });
+
+        // Contact form handler
+        const form = document.getElementById('contactForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const formMessage = document.getElementById('formMessage');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const name = document.getElementById('name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const phone = document.getElementById('phone').value.trim();
+            const message = document.getElementById('message').value.trim();
+
+            // Basic client-side validation
+            if (!name || !email || !message) {
+                formMessage.textContent = 'Please fill in all required fields.';
+                formMessage.className = 'form-message error';
+                return;
+            }
+
+            // Disable button and show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Sending...';
+            formMessage.textContent = '';
+
+            try {
+                const response = await fetch('/api/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, phone, message })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    formMessage.textContent = 'Thank you! We\'ll get back to you soon.';
+                    formMessage.className = 'form-message success';
+                    form.reset();
+                } else {
+                    formMessage.textContent = data.error || 'Something went wrong. Please try again.';
+                    formMessage.className = 'form-message error';
+                }
+            } catch (err) {
+                formMessage.textContent = 'Network error. Please try again later.';
+                formMessage.className = 'form-message error';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Send Inquiry';
+            }
+        });
+    </script>
+    <!-- Cloudflare Web Analytics -->
+    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "26761d7f00d14fd9a5df247edbbc65df"}'></script>
+    <!-- End Cloudflare Web Analytics -->
+</body>
+</html>

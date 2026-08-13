@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Happy 2nd Anniversary, My Love</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Noto+Serif+SC:wght@400;700&family=Inter:wght@300;400&display=swap');
+
+  :root {
+    --rose: #c46669;
+    --blush: #f2b8b8;
+    --cream: #fdf6f0;
+    --gold: #d4a574;
+    --deep-rose: #8b3a3a;
+    --wine: #5c2020;
+    --soft-white: rgba(255,255,255,0.92);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--cream);
+    color: var(--wine);
+    overflow-x: hidden;
+  }
+
+  /* ===== HERO ===== */
+  .hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background: linear-gradient(160deg, #5c2020 0%, #8b3a3a 35%, #c46669 70%, #f2b8b8 100%);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 30% 20%, rgba(212,165,116,0.2) 0%, transparent 60%),
+                radial-gradient(ellipse at 70% 80%, rgba(242,184,184,0.15) 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  /* Floating particles */
+  .particles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .particle {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: rgba(255,255,255,0.6);
+    border-radius: 50%;
+    animation: float-up linear infinite;
+  }
+
+  @keyframes float-up {
+    0% { transform: translateY(100vh) scale(0); opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+  }
+
+  /* Heartbeat ring */
+  .heartbeat-ring {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    margin-bottom: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .heartbeat-ring::before,
+  .heartbeat-ring::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.2);
+    animation: pulse-ring 3s ease-out infinite;
+  }
+
+  .heartbeat-ring::before {
+    width: 100%;
+    height: 100%;
+    animation-delay: 0s;
+  }
+
+  .heartbeat-ring::after {
+    width: 130%;
+    height: 130%;
+    animation-delay: 1s;
+  }
+
+  @keyframes pulse-ring {
+    0% { transform: scale(0.8); opacity: 0.8; }
+    100% { transform: scale(1.5); opacity: 0; }
+  }
+
+  .heart-icon {
+    font-size: 64px;
+    animation: heartbeat 1.5s ease-in-out infinite;
+    filter: drop-shadow(0 0 20px rgba(255,255,255,0.3));
+    z-index: 1;
+  }
+
+  @keyframes heartbeat {
+    0%, 100% { transform: scale(1); }
+    14% { transform: scale(1.15); }
+    28% { transform: scale(1); }
+    42% { transform: scale(1.1); }
+    56% { transform: scale(1); }
+  }
+
+  .hero-title {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(2.5rem, 7vw, 5rem);
+    font-weight: 700;
+    color: var(--soft-white);
+    line-height: 1.15;
+    margin-bottom: 16px;
+    text-shadow: 0 2px 40px rgba(0,0,0,0.2);
+  }
+
+  .hero-subtitle {
+    font-family: 'Noto Serif SC', serif;
+    font-size: clamp(1.2rem, 3vw, 1.8rem);
+    color: rgba(255,255,255,0.85);
+    margin-bottom: 12px;
+    font-weight: 400;
+  }
+
+  .hero-date {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 300;
+    color: rgba(255,255,255,0.6);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin-bottom: 48px;
+  }
+
+  .scroll-hint {
+    position: absolute;
+    bottom: 40px;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+    animation: bob 2s ease-in-out infinite;
+  }
+
+  .scroll-hint::after {
+    content: '';
+    display: block;
+    width: 1px;
+    height: 40px;
+    background: rgba(255,255,255,0.3);
+    margin: 12px auto 0;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(8px); }
+  }
+
+  /* ===== SECTIONS ===== */
+  section {
+    padding: 100px 24px;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  .section-label {
+    font-size: 0.75rem;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: var(--rose);
+    margin-bottom: 24px;
+    font-weight: 400;
+  }
+
+  .section-title {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(1.8rem, 4vw, 2.8rem);
+    font-weight: 700;
+    color: var(--wine);
+    margin-bottom: 40px;
+    line-height: 1.3;
+  }
+
+  /* ===== LETTER ===== */
+  .letter {
+    background: white;
+    border-radius: 16px;
+    padding: 48px 40px;
+    box-shadow: 0 4px 40px rgba(92,32,32,0.06), 0 1px 3px rgba(92,32,32,0.04);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .letter::before {
+    content: '"';
+    position: absolute;
+    top: 20px;
+    left: 24px;
+    font-family: 'Playfair Display', serif;
+    font-size: 120px;
+    color: var(--blush);
+    opacity: 0.4;
+    line-height: 1;
+  }
+
+  .letter p {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.15rem;
+    line-height: 1.9;
+    color: var(--wine);
+    margin-bottom: 20px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .letter p:last-child { margin-bottom: 0; }
+
+  .letter .cn {
+    font-family: 'Noto Serif SC', serif;
+    font-size: 1rem;
+    color: var(--rose);
+    margin-top: 8px;
+  }
+
+  .letter-sign {
+    margin-top: 32px;
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 1.3rem;
+    color: var(--deep-rose);
+  }
+
+  /* ===== TIMELINE ===== */
+  .timeline {
+    position: relative;
+    padding-left: 40px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--blush), var(--rose), var(--gold));
+    border-radius: 1px;
+  }
+
+  .timeline-item {
+    position: relative;
+    margin-bottom: 48px;
+    opacity: 0;
+    transform: translateX(-20px);
+    animation: slide-in 0.6s ease forwards;
+  }
+
+  .timeline-item:nth-child(1) { animation-delay: 0.2s; }
+  .timeline-item:nth-child(2) { animation-delay: 0.4s; }
+  .timeline-item:nth-child(3) { animation-delay: 0.6s; }
+  .timeline-item:nth-child(4) { animation-delay: 0.8s; }
+  .timeline-item:nth-child(5) { animation-delay: 1.0s; }
+
+  @keyframes slide-in {
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -36px;
+    top: 6px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--rose);
+    border: 3px solid var(--cream);
+    box-shadow: 0 0 0 2px var(--rose);
+  }
+
+  .timeline-date {
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 8px;
+    font-weight: 400;
+  }
+
+  .timeline-text {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.1rem;
+    color: var(--wine);
+    line-height: 1.6;
+  }
+
+  /* ===== REASONS GRID ===== */
+  .reasons-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 24px;
+  }
+
+  .reason-card {
+    background: white;
+    border-radius: 12px;
+    padding: 32px 24px;
+    text-align: center;
+    box-shadow: 0 2px 20px rgba(92,32,32,0.05);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .reason-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 32px rgba(92,32,32,0.1);
+  }
+
+  .reason-icon {
+    font-size: 2rem;
+    margin-bottom: 16px;
+    display: block;
+  }
+
+  .reason-text {
+    font-family: 'Playfair Display', serif;
+    font-size: 1rem;
+    color: var(--wine);
+    line-height: 1.5;
+  }
+
+  /* ===== COUNTER ===== */
+  .counter-section {
+    text-align: center;
+    background: linear-gradient(160deg, var(--wine), var(--deep-rose));
+    border-radius: 20px;
+    padding: 80px 40px;
+    margin: 0 auto;
+    max-width: 800px;
+    color: white;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .counter-section::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 0%, rgba(212,165,116,0.15), transparent 70%);
+    pointer-events: none;
+  }
+
+  .counter-label {
+    font-size: 0.8rem;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.6);
+    margin-bottom: 32px;
+  }
+
+  .counter-number {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(3rem, 10vw, 6rem);
+    font-weight: 700;
+    color: var(--gold);
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+
+  .counter-unit {
+    font-size: 1.1rem;
+    color: rgba(255,255,255,0.8);
+    margin-bottom: 24px;
+  }
+
+  .counter-detail {
+    font-family: 'Noto Serif SC', serif;
+    font-size: 1rem;
+    color: rgba(255,255,255,0.5);
+  }
+
+  /* ===== PROMISE ===== */
+  .promise {
+    text-align: center;
+    padding: 120px 24px;
+  }
+
+  .promise-text {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(1.5rem, 4vw, 2.5rem);
+    font-style: italic;
+    color: var(--wine);
+    line-height: 1.6;
+    max-width: 600px;
+    margin: 0 auto 24px;
+  }
+
+  .promise-cn {
+    font-family: 'Noto Serif SC', serif;
+    font-size: 1.1rem;
+    color: var(--rose);
+    margin-bottom: 48px;
+  }
+
+  .forever {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(2rem, 6vw, 4rem);
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--rose), var(--gold));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ===== FOOTER ===== */
+  footer {
+    text-align: center;
+    padding: 40px 24px 60px;
+    font-size: 0.8rem;
+    color: var(--rose);
+    letter-spacing: 2px;
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 600px) {
+    .letter { padding: 32px 24px; }
+    .counter-section { padding: 60px 24px; margin: 0 16px; }
+    section { padding: 60px 20px; }
+  }
+
+  /* ===== FADE-IN ON SCROLL ===== */
+  .fade-in {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.8s ease, transform 0.8s ease;
+  }
+
+  .fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Music toggle */
+  .music-toggle {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--wine);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 16px rgba(92,32,32,0.3);
+    z-index: 100;
+    transition: transform 0.2s ease;
+  }
+
+  .music-toggle:hover { transform: scale(1.1); }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="particles" id="particles"></div>
+  <div class="heartbeat-ring">
+    <span class="heart-icon">❤</span>
+  </div>
+  <h1 class="hero-title">Happy 2nd<br>Anniversary</h1>
+  <p class="hero-subtitle">两周年快乐，我的爱人</p>
+  <p class="hero-date">May 26, 2024 &middot; May 26, 2026</p>
+  <div class="scroll-hint">SCROLL</div>
+</div>
+
+<!-- LETTER -->
+<section class="fade-in">
+  <div class="section-label">A Letter</div>
+  <h2 class="section-title">To My Dearest Chengxuan</h2>
+  <div class="letter">
+    <p>
+      Two years ago today, I made the best decision of my life. I said "I do" to the woman who holds my heart, and every day since has been a gift.
+    </p>
+    <p class="cn">
+      两年前的今天，我做出了人生中最正确的决定。
+    </p>
+    <p>
+      You are my partner, my confidante, my greatest adventure. From the quiet mornings to the late-night conversations, from building a home together to dreaming about tomorrow &mdash; everything is better because you're in it.
+    </p>
+    <p class="cn">
+      你是我最好的伴侣，是我所有冒险的同行者。
+    </p>
+    <p>
+      Thank you for two years of love, laughter, and growing together. Here's to us &mdash; to everything we've built and everything still ahead.
+    </p>
+    <p class="cn">
+      谢谢你两年的陪伴与爱。愿我们的未来，比今天更美好。
+    </p>
+    <div class="letter-sign">
+      Forever yours,<br>Stan &infin;
+    </div>
+  </div>
+</section>
+
+<!-- TIMELINE -->
+<section class="fade-in">
+  <div class="section-label">Our Journey</div>
+  <h2 class="section-title">Two Years of Us</h2>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-date">May 26, 2024</div>
+      <div class="timeline-text">The day we said "I do" &mdash; two hearts became one. 我们结婚的日子。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">The First Year</div>
+      <div class="timeline-text">Learning each other's rhythms, building routines, discovering that love is a verb. 第一年，我们一起学习、成长。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">Through It All</div>
+      <div class="timeline-text">Late nights, big dreams, quiet moments that meant everything. 每一个深夜，每一个梦想。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">This Year</div>
+      <div class="timeline-text">Stronger together. Building something real, something lasting. 越来越好的我们。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">May 26, 2026</div>
+      <div class="timeline-text">Two years down, a lifetime to go. 两周年快乐，余生都是你。</div>
+    </div>
+  </div>
+</section>
+
+<!-- REASONS -->
+<section class="fade-in">
+  <div class="section-label">From My Heart</div>
+  <h2 class="section-title">Why I Love You</h2>
+  <div class="reasons-grid">
+    <div class="reason-card">
+      <span class="reason-icon">🌸</span>
+      <div class="reason-text">Your warmth makes every day brighter</div>
+    </div>
+    <div class="reason-card">
+      <span class="reason-icon">💪</span>
+      <div class="reason-text">Your strength inspires me to be better</div>
+    </div>
+    <div class="reason-card">
+      <span class="reason-icon">🎨</span>
+      <div class="reason-text">Your creativity fills our world with color</div>
+    </div>
+    <div class="reason-card">
+      <span class="reason-icon">🏠</span>
+      <div class="reason-text">You turned a house into a home</div>
+    </div>
+    <div class="reason-card">
+      <span class="reason-icon">✨</span>
+      <div class="reason-text">Your laugh is my favorite sound</div>
+    </div>
+    <div class="reason-card">
+      <span class="reason-icon">🌙</span>
+      <div class="reason-text">You are my peace at the end of every day</div>
+    </div>
+  </div>
+</section>
+
+<!-- COUNTER -->
+<div class="counter-section fade-in">
+  <div class="counter-label">Together For</div>
+  <div class="counter-number" id="days">730</div>
+  <div class="counter-unit">days and counting</div>
+  <div class="counter-detail" id="detail">730 天，7,300 个小时，438,000 分钟</div>
+</div>
+
+<!-- PROMISE -->
+<section class="promise fade-in">
+  <div class="section-label">My Promise</div>
+  <div class="promise-text">
+    "I choose you today, tomorrow, and every day after."
+  </div>
+  <div class="promise-cn">
+    今天，明天，每一天，我都选择你。
+  </div>
+  <div class="forever">Forever & Always</div>
+</section>
+
+<footer>
+  Made with love &middot; Stan &rarr; Chengxuan &middot; 2026
+</footer>
+
+<script>
+// ===== PARTICLES =====
+(function() {
+  const container = document.getElementById('particles');
+  const count = 40;
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('div');
+    p.className = 'particle';
+    p.style.left = Math.random() * 100 + '%';
+    p.style.animationDuration = (6 + Math.random() * 10) + 's';
+    p.style.animationDelay = (Math.random() * 8) + 's';
+    p.style.width = p.style.height = (2 + Math.random() * 4) + 'px';
+    container.appendChild(p);
+  }
+})();
+
+// ===== SCROLL FADE-IN =====
+(function() {
+  const els = document.querySelectorAll('.fade-in');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.15 });
+  els.forEach(el => observer.observe(el));
+})();
+
+// ===== LIVE COUNTER =====
+(function() {
+  const wedding = new Date('2024-05-26T00:00:00-04:00');
+  const daysEl = document.getElementById('days');
+  const detailEl = document.getElementById('detail');
+
+  function update() {
+    const now = new Date();
+    const diff = now - wedding;
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor(diff / (1000 * 60));
+
+    daysEl.textContent = days.toLocaleString();
+    detailEl.textContent = `${days.toLocaleString()} 天，${hours.toLocaleString()} 个小时，${minutes.toLocaleString()} 分钟`;
+  }
+
+  update();
+  setInterval(update, 60000);
+})();
+</script>
+
+</body>
+</html>

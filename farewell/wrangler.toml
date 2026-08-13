@@ -1,0 +1,8 @@
+name = "farewell"
+main = "src/index.js"
+compatibility_date = "2025-01-29"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "GUESTBOOK"
+id = "78a946ead1f24400b2801fe785287aae"

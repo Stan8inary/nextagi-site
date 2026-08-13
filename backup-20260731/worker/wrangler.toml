@@ -1,0 +1,20 @@
+name = "www"
+account_id = "982fdf0a67691f5cc01d6918ce69da58"
+main = "src/index.js"
+compatibility_date = "2025-01-29"
+workers_dev = true
+
+# Custom domain routing
+routes = [
+  "www.apposight.com/*",
+  "apposight.com/*",
+]
+
+# KV namespaces for rate limiting and contact form submissions
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "ad1ceba5c38c49d2bb12dbf80f4b1b6e"
+
+[[kv_namespaces]]
+binding = "CONTACT_FORMS"
+id = "cfc6b070bb0a43c4addaeace26eab491"

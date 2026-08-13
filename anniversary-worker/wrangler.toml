@@ -1,0 +1,4 @@
+name = "anniversary"
+main = "src/index.js"
+compatibility_date = "2025-01-29"
+workers_dev = true
