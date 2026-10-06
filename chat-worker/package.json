@@ -1,0 +1,11 @@
+{
+  "name": "apposight-chat",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build_knowledge.js",
+    "test": "node tests.js",
+    "deploy": "wrangler deploy"
+  }
+}

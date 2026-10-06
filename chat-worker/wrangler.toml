@@ -1,0 +1,40 @@
+name = "apposight-chat"
+account_id = "982fdf0a67691f5cc01d6918ce69da58"
+main = "src/index.js"
+compatibility_date = "2025-01-29"
+workers_dev = false
+
+# Route: more specific than the main worker's "apposight.com/*".
+# Cloudflare prefers the most specific match per request, so /api/chat*
+# here wins without touching the main worker's routing.
+routes = [
+  "apposight.com/api/chat*",
+  "www.apposight.com/api/chat*",
+]
+
+# The knowledge base is NOT in KV — it is bundled into the worker as a
+# static JS module (src/knowledge.js) by build_knowledge.js. Zero runtime
+# KV latency, and the KB refresh is a plain re-deploy.
+
+# --- Question log: 30-day TTL, question text only (no IPs, no emails) ---
+[[kv_namespaces]]
+binding = "KV_LOG"
+id = "a4108bff241144c6893525dcd7102ffa"
+
+# --- Durable Object: accurate per-IP minute counter + global daily cap ---
+# (per-IP minute counter uses DO state; the global daily counter is a KV
+#  key with a 24h TTL so it auto-resets each day)
+[[durable_objects.bindings]]
+name = "Limiter"
+class_name = "ChatLimiter"
+
+# Required for sqlite-backed Durable Objects (wrangler warns without it).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "ChatLimiter" ]
+
+[vars]
+# Public to the browser (Turnstile site key is NOT a secret; the secret is).
+TURNSTILE_SITE_KEY = "0x4AAAAAAFPw1lo4aAQOLQQ8"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+DAILY_CAP = "300"
