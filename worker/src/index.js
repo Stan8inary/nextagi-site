@@ -881,6 +881,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <!-- Cloudflare Web Analytics -->
     <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "26761d7f00d14fd9a5df247edbbc65df"}'></script>
     <!-- End Cloudflare Web Analytics -->
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 const ABOUT_HTML = `<!DOCTYPE html>
@@ -1053,6 +1054,7 @@ const ABOUT_HTML = `<!DOCTYPE html>
     <!-- Cloudflare Web Analytics -->
     <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "26761d7f00d14fd9a5df247edbbc65df"}'></script>
     <!-- End Cloudflare Web Analytics -->
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 const ADMIN_HTML = `<!DOCTYPE html>
@@ -1349,6 +1351,7 @@ const USE_CASES_LISTING_HTML = `<!DOCTYPE html>
             }
         })();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 
@@ -1906,6 +1909,7 @@ const USE_CASES_ENTRASYNC_HTML = `<!DOCTYPE html>
             document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible'));
         }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>
 `;
@@ -2103,6 +2107,7 @@ const CIS_BENCHMARK_HTML = `<!DOCTYPE html>
             }
         })();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 
@@ -2353,6 +2358,7 @@ const ENTRA_CIS_V2_HTML = `<!DOCTYPE html>
         document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
         setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>
 `;
@@ -2648,6 +2654,7 @@ flowchart TD
             mermaid.run({querySelector:'.mermaid'});
         })();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>
 `;
@@ -3167,6 +3174,7 @@ Destination DSA     largest delta    fails/total %%   error
         document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
         setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>
 `;
@@ -3546,6 +3554,7 @@ const DC_UPGRADE_CASE_HTML = `<!DOCTYPE html>
         document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
         setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>
 `;
@@ -3764,6 +3773,7 @@ H3  3 human-named local SAM  -&gt; disabled      (verified: Enabled=False each)<
         document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
         setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;;
 
@@ -4709,6 +4719,7 @@ ERROR: (ResourceGroupNotFound) Resource group &#39;cpcs-rg&#39; could not be fou
         document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
         setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 
@@ -5096,6 +5107,7 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
         loadBriefings();
         loadWeeklyAnalysis();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 
@@ -5286,6 +5298,7 @@ function buildBriefingDetailPage(briefing) {
     <script>
     (function(){var h=document.querySelector('.hamburger'),n=document.querySelector('.nav-links');if(h&&n){h.addEventListener('click',function(){h.classList.toggle('active');n.classList.toggle('open');});n.querySelectorAll('a').forEach(function(l){l.addEventListener('click',function(){h.classList.remove('active');n.classList.remove('open');});});}})();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 }
@@ -6105,6 +6118,7 @@ function buildWeeklyAnalysisDetailPage(post) {
     <script>
     (function(){var h=document.querySelector('.hamburger'),n=document.querySelector('.nav-links');if(h&&n){h.addEventListener('click',function(){h.classList.toggle('active');n.classList.toggle('open');});n.querySelectorAll('a').forEach(function(l){l.addEventListener('click',function(){h.classList.remove('active');n.classList.remove('open');});});}})();
     </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
 </body>
 </html>`;
 }
