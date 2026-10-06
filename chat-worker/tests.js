@@ -632,15 +632,20 @@ await t('DV5 /api/chat still REJECTS a foreign origin even WITH DEV_ORIGIN', asy
 
 await t('DV6 wrangler.toml does NOT set DEV_ORIGIN or TURNSTILE_SITE_KEY as real values', async () => {
   const toml = await (await import('node:fs/promises')).readFile('./wrangler.toml', 'utf8');
-  // DEV_ORIGIN must never appear in toml (dev-only, .dev.vars only).
-  assert(!/^\s*DEV_ORIGIN\s*=/.test(toml), 'DEV_ORIGIN must NOT be in wrangler.toml');
-  // TURNSTILE_SITE_KEY, if present, must be a placeholder/test value, never a real key.
+  // (a) DEV_ORIGIN must never appear in toml (dev-only, .dev.vars only).
+  assert(!/^\s*DEV_ORIGIN\s*=/m.test(toml), 'DEV_ORIGIN must NOT be in wrangler.toml');
+  // (b) the SECRET-bearing var names must never appear in toml.
+  assert(!toml.includes('TURNSTILE_SECRET'), 'TURNSTILE_SECRET must NOT be in wrangler.toml');
+  assert(!toml.includes('GEMINI_API_KEY'), 'GEMINI_API_KEY must NOT be in wrangler.toml');
+  // (c) TURNSTILE_SITE_KEY must be present and a PRODUCTION key (0x...),
+  // never a Cloudflare test key (1x/2x/3x) or a placeholder.
   const m = toml.match(/^\s*TURNSTILE_SITE_KEY\s*=\s*"([^"]*)"/m);
-  if (m) {
-    const v = m[1];
-    assert(v === '' || v.startsWith('1x000') || v.includes('REPLACE') || v.includes('TEST'),
-      'TURNSTILE_SITE_KEY in toml must be empty/test/placeholder (length ' + v.length + ')');
-  }
+  assert(m, 'TURNSTILE_SITE_KEY must be present in wrangler.toml');
+  const v = m[1];
+  assert(/^0x[A-Za-z0-9_-]{10,}$/.test(v),
+    'TURNSTILE_SITE_KEY must be a production key 0x... (length ' + v.length + ')');
+  assert(!/^1x|^2x|^3x/.test(v), 'TURNSTILE_SITE_KEY must NOT be a Cloudflare test key (1x/2x/3x)');
+  assert(!v.includes('REPLACE'), 'TURNSTILE_SITE_KEY must NOT contain REPLACE');
 });
 
 // ===========================================================================
