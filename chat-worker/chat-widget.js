@@ -254,15 +254,26 @@
         callback: (token) => { state.turnstileToken = token; },
         'expired-callback': () => { state.turnstileToken = null; },
       });
-      // invisible widget; grab the first token once it appears
-      for (let i = 0; i < 20 && !state.turnstileToken; i++) await new Promise((r) => setTimeout(r, 250));
+      // invisible widget; grab the first token once it appears (BOUND: 8s max —
+      // a slow mobile load of the widget should fail fast with the worker's
+      // clean 403, never sit "typing…" forever)
+      const t0 = Date.now();
+      while (!state.turnstileToken && Date.now() - t0 < 8000) await new Promise((r) => setTimeout(r, 250));
       return state.turnstileToken || '';
     }
-    // refresh for subsequent sends
-    return new Promise((res) => {
-      try { window.turnstile.reset(state.turnstileWidget, (tok) => res(tok || '')); }
-      catch { res(''); }
-    });
+    // refresh for subsequent sends — BOUND IT: a reset that never calls back
+    // (locked/expired widget on some mobile stacks) used to hang the entire
+    // send forever, because the 60s overall cap is armed only AFTER this.
+    try {
+      return await Promise.race([
+        new Promise((res) => {
+          window.turnstile.reset(state.turnstileWidget, (tok) => res(tok || ''));
+        }),
+        new Promise((res) => setTimeout(() => res(''), 10000)), // 10s bound -> worker 403s with a friendly message
+      ]);
+    } catch {
+      return ''; // widget in a bad state: let the worker reject with a clean 403
+    }
   }
 
   // ---- send flow ----
