@@ -1245,5 +1245,25 @@ await t('TO15 t_ timing log value shape: ttfb_ms/total_ms/finish_reason/outcome/
   globalThis.fetch = defaultFetch;
 });
 
+// TO16: src/widget.js (the built string module the worker actually SERVES)
+// must be in sync with chat-widget.js (the source). Catches the stale-build
+// gap: TO10-TO14 read chat-widget.js directly, so they pass even when the
+// deployed artifact is behind. The build format is fixed by build_knowledge.js:
+//   2 comment lines + `export default ` + JSON.stringify(raw) + `;\n`
+await t('TO16 built widget sync: src/widget.js embeds chat-widget.js verbatim + has timeout/busy-reset code', async () => {
+  const fs = await import('node:fs');
+  const builtRaw = fs.readFileSync(new URL('./src/widget.js', import.meta.url), 'utf8');
+  const m = builtRaw.match(/^\/\/ AUTO-GENERATED[^\n]*\n\/\/ Edit[^\n]*\nexport default (.*);\n$/s);
+  assert(m, 'src/widget.js matches the build_knowledge.js output format');
+  const embedded = JSON.parse(m[1]);
+  const source = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  assert(embedded === source, 'embedded widget text === chat-widget.js source (byte-identical; rebuild with: node build_knowledge.js)');
+  // The content must carry the client-side timeout + busy-reset fixes
+  // (independent of exact marker strings — the sync check above covers drift).
+  assert(/OVERALL_MS = 60000/.test(embedded), '60s overall cap present in built widget');
+  assert(/IDLE_MS = 25000/.test(embedded), '25s idle watchdog present in built widget');
+  assert(/state\.busy = false/.test(embedded) && /composer input/.test(embedded), 'busy-reset re-enables input in built widget');
+});
+
 console.log(`\n== RESULT: ${pass} passed, ${fail} failed ==\n`);
 process.exit(fail ? 1 : 0);
