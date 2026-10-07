@@ -1020,5 +1020,230 @@ await t('REG11 Gemini 429 (quota) -> friendly 502, no upstream text, status-code
   assert(!mlogs[0][1].includes(LEAK) && !mlogs[0][1].includes('quota') && !mlogs[0][1].includes('RESOURCE'), 'no upstream body in KV log');
 });
 
+// ===========================================================================
+// TO — session-3 timeout / retrieval / sources / prompt fixes (items 1-5, 7, 8)
+// Timeouts use short env values (GEMINI_TTFB_TIMEOUT_MS / IDLE_READ_TIMEOUT_MS
+// / OVERALL_CAP_MS) so the real code paths fire in ~50-200 ms, not 20/15/45 s.
+// ===========================================================================
+const TO_NOTICE = 'That took too long. Please try again or use the contact form.';
+async function drainWithGuard(r, guardMs = 5000) {
+  // Read the (eventually-closing) SSE body, but never wait longer than guardMs.
+  return await Promise.race([
+    r.text(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('STREAM-DRAN-GUARDED(' + guardMs + 'ms)')), guardMs)),
+  ]);
+}
+
+await t('TO1 stalled upstream after headers -> friendly timeout error, stream CLOSED within cap, t_ log outcome=timeout', async () => {
+  // Gemini returns headers + ONE byte, then goes silent (the production
+  // symptom). The relay must hit the idle cap, emit the friendly error, and
+  // CLOSE the stream — the body read below must resolve on its own.
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      return new Response(new ReadableStream({
+        start(c) { c.enqueue(new TextEncoder().encode('data: {"candidates":[{"content":{"parts":[{"text":"AppoS"}]}}]}}\n\n')); /* then: NO close, NO more bytes */ },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50', IDLE_READ_TIMEOUT_MS: '50', OVERALL_CAP_MS: '200' };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), env);
+  assert(r.status === 200, 'SSE 200 opened before the stall (got ' + r.status + ')');
+  const txt = await drainWithGuard(r, 2000); // must resolve when the worker closes the stream
+  assert(txt.includes(TO_NOTICE), 'friendly timeout notice present: ' + txt);
+  assert(/event:\s*error/m.test(txt), 'an SSE error event was emitted');
+  assert(!txt.includes('STREAM-DRAN-GUARDED'), 'stream closed on its own (drain resolved)');
+  // t_ timing log: outcome must be "timeout".
+  const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+  assert(tlogs.length >= 1, 'at least one t_ timing log (got ' + tlogs.length + ')');
+  const rec = JSON.parse(tlogs[tlogs.length - 1][1]);
+  assert(rec.outcome === 'timeout', 't_ log outcome=timeout (got ' + JSON.stringify(rec) + ')');
+  assert(!kv.m.get(tlogs[tlogs.length - 1][0]).includes('What does AppoSight do'), 'no question text in t_ log');
+});
+
+await t('TO2 Gemini hang BEFORE headers (TTFB) -> 504 friendly timeout, t_ log outcome=timeout', async () => {
+  // Upstream never responds at all: fetch with AbortSignal must reject at the
+  // TTFB cap, and the worker must answer 504 with the friendly timeout text.
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      // Real fetch rejects when the signal aborts. Mirror that: resolve only
+      // if not already aborted, else reject with an AbortError on abort.
+      const sig = opts.signal;
+      if (sig && sig.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      return await new Promise((resolve, reject) => {
+        const onAbort = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); };
+        if (sig) { if (sig.aborted) { onAbort(); } else sig.addEventListener('abort', onAbort, { once: true }); }
+        /* never resolve on its own — simulates a hang before headers */
+      });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), env);
+  assert(r.status === 504, 'TTFB hang -> 504 (got ' + r.status + ')');
+  const body = await r.json();
+  assert(body.error === 'timeout', 'error=timeout (got ' + body.error + ')');
+  assert(body.message === TO_NOTICE, 'friendly timeout message (got ' + body.message + ')');
+  assert(!!body.contact, 'contact anchor present');
+  const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+  assert(tlogs.length >= 1, 't_ timing log written (got ' + tlogs.length + ')');
+  const rec = JSON.parse(tlogs[tlogs.length - 1][1]);
+  assert(rec.outcome === 'timeout', 't_ log outcome=timeout (got ' + JSON.stringify(rec) + ')');
+  assert(rec.ttfb_ms === null, 'ttfb_ms is null (no first byte)');
+  assert(!JSON.stringify(rec).includes('What does AppoSight do'), 'no question text in t_ log');
+});
+
+await t('TO3 retrieval follow-up: "What is EntraSync?" after AKS -> entrasync #1 (latest-only rule)', async () => {
+  const msgs = [
+    { role: 'user', content: 'Do you do AKS work?' },
+    { role: 'assistant', content: 'Yes — see the AKS portal use case.' },
+    { role: 'user', content: 'What is EntraSync?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q === 'What is EntraSync?', 'latest has a distinctive entity -> use it alone, got: ' + JSON.stringify(q));
+  const r = R.retrieve(q);
+  assert(r.top[0].url === '/use-cases/entrasync', 'entrasync ranks #1, got ' + r.top[0].url);
+});
+
+await t('TO4 retrieval follow-up: "How long did it take?" after DC question -> dc-upgrade in top-3 (prev appended)', async () => {
+  const msgs = [
+    { role: 'user', content: 'How long did the DC upgrade take?' },
+    { role: 'assistant', content: 'We walked through the whole upgrade.' },
+    { role: 'user', content: 'How long did it take?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q === 'How long did the DC upgrade take? How long did it take?', 'pro-form "it" -> append previous user msg, got: ' + JSON.stringify(q));
+  const r = R.retrieve(q);
+  const dcRank = r.top.findIndex((x) => x.url === '/use-cases/dc-upgrade');
+  assert(dcRank >= 0 && dcRank < 3, 'dc-upgrade in top-3 via entity carry-over, got rank ' + (dcRank + 1 || 'absent'));
+});
+
+await t('TO5 retrieval follow-up: >=3 content tokens -> latest only (does NOT carry prior AKS)', async () => {
+  const msgs = [
+    { role: 'user', content: 'Do you do AKS work?' },
+    { role: 'assistant', content: 'Yes.' },
+    { role: 'user', content: 'What ACR pull identity did AKS use for images?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q === 'What ACR pull identity did AKS use for images?', '>=3 content tokens -> latest only, got: ' + JSON.stringify(q));
+  assert(q.includes('What ACR pull identity'), 'keeps the latest message');
+});
+
+await t('TO6 sources: grounded = distinct URLs of top-3 chunks sent to the model', async () => {
+  const q = 'how long did the DC upgrade take';
+  const rr = R.retrieve(q);
+  assert(rr.mode === 'grounded', 'grounded mode');
+  const expected = [...new Set(rr.chunks.slice(0, 3).map((c) => c.url))];
+  assert(rr.sources.length === expected.length && expected.every((u) => rr.sources.includes(u)),
+    'sources == top-3 chunk URLs: ' + JSON.stringify(rr.sources) + ' vs ' + JSON.stringify(expected));
+});
+
+await t('TO7 sources: social ("what does AppoSight do") = home + about only', async () => {
+  const rr = R.retrieve('what does AppoSight do');
+  assert(rr.mode === 'social', 'social mode (got ' + rr.mode + ')');
+  assert(JSON.stringify(rr.sources) === JSON.stringify(['/','/about']), 'sources = ["/","/about"] (got ' + JSON.stringify(rr.sources) + ')');
+});
+
+await t('TO8 sources: buying = home + about only; canned = none', async () => {
+  const buying = R.retrieve('pricing');
+  assert(JSON.stringify(buying.sources) === JSON.stringify(['/','/about']), 'buying sources = ["/","/about"] (got ' + JSON.stringify(buying.sources) + ')');
+  const canned = R.retrieve('weather in tokyo');
+  assert(canned.mode === 'canned', 'canned mode (got ' + canned.mode + ')');
+  assert(canned.sources.length === 0, 'canned sources empty (got ' + JSON.stringify(canned.sources) + ')');
+});
+
+await t('TO9 system prompt: brand instruction present, old "cite source pages" rule REMOVED', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('./src/index.js', import.meta.url), 'utf8');
+  assert(/3[-–—\s]4 short\s+lines/.test(src.replace(/'\s*\+\s*'/g, ' ')), 'brand 3-4-line instruction present in prompt source (may span string-literal joins)');
+  assert(!/Cite the source pages/i.test(src), 'old "Cite the source pages" rule removed');
+  assert(!/as a Sources: list/i.test(src), 'old "as a Sources: list" phrasing removed');
+});
+
+await t('TO10 widget: renderSources hides the label when the list is empty', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  // renderSources must early-return for an empty/absent list (no label node).
+  const m = src.match(/function renderSources[\s\S]*?\n  \}/);
+  assert(m, 'renderSources function found');
+  assert(/if \(!sources \|\| !sources\.length\) return/.test(m[0]), 'empty/absent sources -> early return (label hidden)');
+});
+
+await t('TO11 widget: setBusy ALWAYS re-enables the input AND the send button', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  const m = src.match(/function setBusy[\s\S]*?\n  \}/);
+  assert(m, 'setBusy function found');
+  assert(/\[data-act="send"\]/.test(m[0]) && /composer input/.test(m[0]), 'setBusy toggles both send button and input');
+});
+
+await t('TO12 widget: New chat resets a stuck busy state (input + send re-enabled)', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  const m = src.match(/\[data-act="new"\]'\)\.addEventListener\('click',\s*\(\)\s*=>\s*\{[\s\S]*?state\.busy\s*=\s*false;[\s\S]*?data-act="send"[^;]*;[\s\S]*?composer input/);
+  assert(m, 'new-chat handler found');
+  assert(/state\.busy = false/.test(m[0]), 'new chat clears state.busy');
+  assert(/\[data-act="send"\]/.test(m[0]) && /composer input/.test(m[0]), 'new chat re-enables send + input');
+});
+
+await t('TO13 widget: send() has a 60s overall AbortController cap', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  assert(/OVERALL_MS = 60000/.test(src), '60000ms overall cap constant present');
+  assert(/new AbortController\(\)/.test(src), 'AbortController used for the fetch');
+  assert(/signal: ac\.signal/.test(src), 'fetch uses the abort signal');
+});
+
+await t('TO14 widget: 25s idle watchdog on the SSE reader loop', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  assert(/IDLE_MS = 25000/.test(src), '25000ms idle watchdog constant present');
+  assert(/armIdle\(\)/.test(src), 'idle watchdog armed around reader.read()');
+});
+
+await t('TO15 t_ timing log value shape: ttfb_ms/total_ms/finish_reason/outcome/error_code, no question/IP', async () => {
+  // A clean (non-timeout) request should still log a t_ entry with the full
+  // shape and outcome=ok. Reuse the default streaming mock.
+  const defaultFetch = globalThis.fetch; // capture whatever the next test set, restore after
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      return new Response(new ReadableStream({
+        start(c) { c.enqueue(new TextEncoder().encode('data: {"candidates":[{"content":{"parts":[{"text":"AppoSight builds"}]},"finishReason":"STOP"}]}\n\n')); c.close(); },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv });
+  assert(r.status === 200, '200 (got ' + r.status + ')');
+  await drainWithGuard(r, 2000);
+  const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+  assert(tlogs.length >= 1, 't_ log written (got ' + tlogs.length + ')');
+  const rec = JSON.parse(tlogs[tlogs.length - 1][1]);
+  const keys = Object.keys(rec).sort().join(',');
+  assert(['ts','ttfb_ms','total_ms','finish_reason','outcome','error_code'].every((k) => k in rec), 'all fields present: ' + keys);
+  assert(rec.outcome === 'ok', 'outcome=ok (got ' + rec.outcome + ')');
+  assert(typeof rec.ttfb_ms === 'number' && rec.ttfb_ms >= 0, 'ttfb_ms numeric >= 0');
+  assert(typeof rec.total_ms === 'number' && rec.total_ms >= rec.ttfb_ms, 'total_ms >= ttfb_ms');
+  assert(rec.finish_reason === 'STOP', 'finish_reason recorded (got ' + rec.finish_reason + ')');
+  const raw = tlogs[tlogs.length - 1][1];
+  assert(!raw.includes('What does AppoSight do'), 'no question text');
+  assert(!/cf-connecting-ip|x-forwarded-for|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(raw), 'no IP in t_ log');
+  globalThis.fetch = defaultFetch;
+});
+
 console.log(`\n== RESULT: ${pass} passed, ${fail} failed ==\n`);
 process.exit(fail ? 1 : 0);

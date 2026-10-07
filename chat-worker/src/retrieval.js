@@ -222,9 +222,19 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
     }
   }
 
-  const sources = mode === 'grounded'
-    ? [...new Set(selected.map((c) => c.url))]
-    : INDEX.map((p) => p.url);
+  // Sources (what the UI shows as chips):
+  //   grounded -> distinct URLs of the top-3 chunks ACTUALLY sent to the model
+  //   social   -> HOME + ABOUT only (what the model is grounded on)
+  //   buying   -> HOME + ABOUT only (same context; + lead-capture offer)
+  //   canned   -> none (the UI hides the empty label)
+  let sources;
+  if (mode === 'grounded') {
+    sources = [...new Set(selected.slice(0, 3).map((c) => c.url))];
+  } else if (mode === 'social') {
+    sources = ['/', '/about'];
+  } else {
+    sources = [];
+  }
   return {
     query,
     topScore: Math.round(topScore * 100) / 100,
@@ -238,13 +248,33 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// buildQuery: concatenation of the LAST TWO user messages, so follow-ups like
-// "how long did it take?" still carry the entity from the previous turn.
+// buildQuery (item 3): a follow-up that is a pro-form / anaphoric reference
+// ("how long did it take?", "what about this one?") must carry the previous
+// user message so the entity from the prior turn is preserved. A
+// self-contained follow-up that names its own entity ("What is EntraSync?",
+// "what ACR pull identity did AKS use?") must stand alone, or an off-topic
+// prior question ("Do you do AKS work?") will dominate retrieval.
+//
+// Discriminator = presence of a 1st/2nd/3rd-person pronoun or a demonstrative
+// in the LATEST user message: those signal the answer depends on an earlier
+// turn. Entity-bearing questions have none, so they are never concatenated.
+// This keeps R11 ("How long did it take?" -> concat, AKS portal #1) working
+// while fixing the case where a fresh entity question was wrongly dragged
+// into the prior topic.
 // ---------------------------------------------------------------------------
+const ANAPHORA = /\b(it|its|this|that|these|those|they|them)\b/i;
+export function isProForm(text) {
+  return ANAPHORA.test(String(text || '').toLowerCase());
+}
 export function buildQuery(messages) {
   const users = (messages || [])
     .filter((m) => m && m.role === 'user' && typeof m.content === 'string');
-  return users.slice(-2).map((m) => m.content).join(' ');
+  if (!users.length) return '';
+  const latest = users[users.length - 1].content;
+  if (isProForm(latest) && users.length >= 2) {
+    return users[users.length - 2].content + ' ' + latest; // anaphoric -> carry prior turn
+  }
+  return latest; // self-contained (or first message) -> latest only
 }
 
 // ---------------------------------------------------------------------------

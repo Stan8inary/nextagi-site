@@ -172,6 +172,7 @@
   }
 
   function renderSources(sources) {
+    if (!sources || !sources.length) return; // item 4: hide the label when the list is empty
     const last = $('.log .msg.bot:last-child .bubble-b');
     if (!last) return;
     const box = document.createElement('div');
@@ -218,6 +219,7 @@
   function setBusy(b) {
     state.busy = b;
     const s = $('[data-act="send"]'); if (s) s.disabled = b;
+    const inp = $('.composer input'); if (inp) inp.disabled = b; // item 2: input re-enabled on finish
   }
 
   // ---- Turnstile ----
@@ -284,12 +286,37 @@
     let leadCapture = false;
     let botBox = typing.querySelector('.bubble-b');
 
+    // item 2: client-side timeouts
+    //   OVERALL  = 60s (AbortController on the fetch — covers headers + body)
+    //   IDLE     = 25s (watchdog: if reader.read() hasn't resolved in this
+    //              window we abort and show the friendly timeout notice)
+    const OVERALL_MS = 60000;
+    const IDLE_MS = 25000;
+    const TIMEOUT_NOTICE = 'That took too long. Please try again or use the contact form.';
+    const ac = new AbortController();
+    let overallTimer = null;
+    let idleTimer = null;
+    const armOverall = () => {
+      if (overallTimer) clearTimeout(overallTimer);
+      overallTimer = setTimeout(() => ac.abort(), OVERALL_MS);
+    };
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => ac.abort(), IDLE_MS);
+    };
+    const disarm = () => {
+      if (overallTimer) { clearTimeout(overallTimer); overallTimer = null; }
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    };
+
     try {
       const token = await getTurnstileToken();
+      armOverall();
       const resp = await fetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: state.messages, cf_turnstile_response: token }),
+        signal: ac.signal,
       });
 
       if (!resp.ok || !resp.body) {
@@ -303,42 +330,57 @@
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const block = buf.slice(0, idx); buf = buf.slice(idx + 2);
-          let event = 'message', data = '';
-          block.split('\n').forEach((l) => {
-            if (l.startsWith('event:')) event = l.slice(6).trim();
-            else if (l.startsWith('data:')) data += l.slice(5).trim();
-          });
-          if (!data) continue;
-          let p; try { p = JSON.parse(data); } catch { continue; }
-          if (event === 'start') { /* keep typing until first delta */ }
-          else if (event === 'delta') {
-            fullText += (p.text || '');
-            botBox.textContent = fullText;
-            $('.log').scrollTop = $('.log').scrollHeight;
-          } else if (event === 'done') {
-            if (p.sources) renderSources(p.sources);
-            leadCapture = !!p.lead_capture;
-          } else if (event === 'error') {
-            botBox.textContent = '';
-            notice(p.message || 'Please use our contact form.', true);
+      try {
+        while (true) {
+          armIdle();
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const block = buf.slice(0, idx); buf = buf.slice(idx + 2);
+            let event = 'message', data = '';
+            block.split('\n').forEach((l) => {
+              if (l.startsWith('event:')) event = l.slice(6).trim();
+              else if (l.startsWith('data:')) data += l.slice(5).trim();
+            });
+            if (!data) continue;
+            let p; try { p = JSON.parse(data); } catch { continue; }
+            if (event === 'start') { /* keep typing until first delta */ }
+            else if (event === 'delta') {
+              fullText += (p.text || '');
+              botBox.textContent = fullText;
+              $('.log').scrollTop = $('.log').scrollHeight;
+            } else if (event === 'done') {
+              if (p.sources) renderSources(p.sources);
+              leadCapture = !!p.lead_capture;
+            } else if (event === 'error') {
+              botBox.textContent = '';
+              notice(p.message || 'Please use our contact form.', true);
+            }
           }
         }
+      } catch (err) {
+        // AbortError => we hit the 60s overall or 25s idle cap. Anything else
+        // (mid-stream network drop) is treated the same way: fail fast, show
+        // the friendly notice, and guarantee the composer is re-enabled.
+        const isAbort = err && (err.name === 'AbortError' || err.name === 'TimeoutError');
+        typing.remove();
+        notice(isAbort ? TIMEOUT_NOTICE : 'Network error. Please use our contact form.', true);
+        return;
       }
 
       if (!fullText.trim()) { typing.remove(); notice('No answer available. Please use our contact form.', true); return; }
       state.messages.push({ role: 'assistant', content: fullText });
       if (leadCapture) renderLeadForm();
     } catch (err) {
+      // fetch-level abort (60s cap fired before headers) or any other throw.
+      const isAbort = err && (err.name === 'AbortError' || err.name === 'TimeoutError');
       typing.remove();
-      notice('Network error. Please use our contact form.', true);
+      notice(isAbort ? TIMEOUT_NOTICE : 'Network error. Please use our contact form.', true);
     } finally {
+      // item 2: ALWAYS re-enable the composer, no matter how we got here.
+      disarm();
       setBusy(false);
     }
   }
@@ -380,6 +422,10 @@
     $('[data-act="close"]').addEventListener('click', toggle);
     $('[data-act="new"]').addEventListener('click', () => {
       state.messages = []; state.greeted = false;
+      // item 2: reset any stuck busy state so "New chat" always un-sticks the composer.
+      state.busy = false;
+      const s = $('[data-act="send"]'); if (s) s.disabled = false;
+      const inp = $('.composer input'); if (inp) inp.disabled = false;
       $('.log').innerHTML = '';
       pushMessage('bot', 'Hi! I can answer questions about AppoSight. What would you like to know?');
       state.greeted = true;
