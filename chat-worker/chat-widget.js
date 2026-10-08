@@ -22,6 +22,110 @@
  * page, and the host page's CSS cannot leak in. Colors/fonts copied from the
  * AppoSight site (:root --blue #2997ff, etc.).
  */
+// ============================================================================
+// APO_TOKEN_BROKER — top-level so tests.js can eval it headlessly (section TS).
+// The IIFE instantiates it via apoMakeTurnstileBroker({ win, setSendLabel,
+// loadScript }). Every path is bounded (reset/execute 15s, refresher 90s,
+// max 3 mint attempts) — nothing can hang the send.
+// ============================================================================
+function apoMakeTurnstileBroker({ win = {}, setSendLabel = null, loadScript = null } = {}) {
+  const S = { key: null, widget: null, token: null, tokenReady: Promise.resolve(true), verifying: false, verFailed: false, labelTimer: null };
+  const raceBound = (p, ms) => Promise.race([p, new Promise((res) => setTimeout(() => res(null), ms))]);
+  const loadTS = () => {
+    if (win.turnstile) return Promise.resolve();
+    if (typeof loadScript === 'function') return Promise.resolve(loadScript()).then(() => undefined, () => undefined);
+    return new Promise((r) => setTimeout(r, 100));
+  };
+  const tsOnLoad = (tok) => { S.token = tok || null; };
+  const tsOnExpired = () => { S.token = null; scheduleRefresher(); };
+  function ensureWidget() {
+    if (!S.key || !win.turnstile) return null;
+    if (S.widget) return S.widget;
+    S.widget = win.turnstile.render(win.document && win.document.body, {
+      sitekey: S.key, callback: tsOnLoad, 'expired-callback': tsOnExpired,
+    });
+    return S.widget;
+  }
+  async function tsMintOnce() {
+    if (!S.key) return null;
+    if (!win.turnstile) { await loadTS(); if (!win.turnstile) return null; }
+    const w = ensureWidget();
+    if (!w) return null;
+    // Single-use model (the phone bug): ALWAYS call reset() for a FRESH
+    // token. The render callback's token was already consumed by siteverify
+    // on the previous send, so it cannot be reused — the OLD widget's
+    // render-token-then-reset pattern broke on send 3. Every getToken()
+    // here yields a brand-new single-use token.
+    const fn = win.turnstile.reset || win.turnstile.execute;
+    if (typeof fn !== 'function') return null;
+    try {
+      return await raceBound(new Promise((res) => fn.call(win.turnstile, w, (tok) => res(tok || null))), 15000);
+    } catch { return null; }
+  }
+  async function tsRefresh() {
+    if (S.verifying) return raceBound(S.tokenReady, 15000);
+    S.verifying = true; S.verFailed = false;
+    S.tokenReady = new Promise(() => {});
+    if (S.labelTimer) { clearTimeout(S.labelTimer); S.labelTimer = null; }
+    if (setSendLabel) {
+      try { setSendLabel(''); } catch {}
+      S.labelTimer = setTimeout(() => { try { setSendLabel('Verifying\u2026'); } catch {} }, 1000);
+    }
+    let attempts = 0;
+    try {
+      while (!S.token && attempts < 3) { attempts++; const tok = await raceBound(tsMintOnce(), 15000); if (tok) S.token = tok; }
+      S.verFailed = !S.token;
+      return S.token;
+    } finally {
+      S.verifying = false;
+      if (S.labelTimer) { clearTimeout(S.labelTimer); S.labelTimer = null; }
+      if (setSendLabel) { try { setSendLabel(''); } catch {} }
+      S.tokenReady = Promise.resolve();
+    }
+  }
+  let refresherTimer = null;
+  function scheduleRefresher() {
+    if (refresherTimer) clearTimeout(refresherTimer);
+    refresherTimer = setTimeout(async () => { S.token = null; await tsRefresh(); }, 90000);
+  }
+  async function getToken() {
+    if (!S.key) return '';
+    const t = await tsRefresh();
+    if (!t) return '';
+    const out = S.token; S.token = null;
+    return out;
+  }
+  async function renewToken() {
+    S.token = null;
+    if (!S.key) return '';
+    return (await tsRefresh()) || '';
+  }
+  return { getToken, renewToken, setSiteKey: (k) => { S.key = k || null; }, state: S };
+}
+// APO_TOKEN_BROKER_END
+
+// item 5: strip a model-written TRAILING "Sources:" block (with or without
+// markdown links / bare-URL bullets) so it is not shown twice alongside the
+// official source chips. Only a trailing block whose header is its own line is
+// removed — a mid-sentence "sources" mention is never touched.
+function apoStripSourcesBlock(t) {
+  const lines = String(t == null ? '' : t).split(/\r?\n/);
+  const isSrc = (s) => /^(?:[-*\u2022]\s*)?(?:\[[^\]]*\]\([^)]*\)|https?:\/\/\S+)/i.test(s.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = (lines[i] || '').trim();
+    if (!/^(?:[-*\u2022]\s*)?Sources?\s*:/i.test(line)) continue;
+    const rest = line.replace(/^(?:[-*\u2022]\s*)?Sources?\s*:\s*/i, '').trim();
+    let ok = !(rest && !isSrc(rest));
+    if (ok) for (let j = i + 1; j < lines.length; j++) {
+      const l = (lines[j] || '').trim();
+      if (l && !isSrc(l)) { ok = false; break; }
+    }
+    if (ok) return lines.slice(0, i).join('\n').replace(/\s+$/, '');
+  }
+  return String(t == null ? '' : t);
+}
+// APO_STRIP_SOURCES_END
+
 (function () {
   'use strict';
 
@@ -37,7 +141,6 @@
     busy: false,
     turnstileKey: '',
     turnstileWidget: null,
-    turnstileToken: null,
     maxMsg: 500,
     greeted: false,
   };
@@ -228,6 +331,7 @@
       const r = await fetch(CFG, { method: 'GET' });
       const cfg = await r.json();
       state.turnstileKey = cfg.turnstile_site_key || '';
+      broker.setSiteKey(state.turnstileKey);
       state.maxMsg = cfg.max_message_chars || 500;
       const inp = $('.composer input'); if (inp) inp.maxLength = String(state.maxMsg);
     } catch { /* non-fatal */ }
@@ -243,38 +347,18 @@
     });
   }
 
-  async function getTurnstileToken() {
-    if (!state.turnstileKey) return ''; // no site key configured -> send empty (worker decides)
-    if (state.turnstileToken) { const t = state.turnstileToken; state.turnstileToken = null; return t; }
-    await loadTurnstileScript();
-    if (!window.turnstile) return '';
-    if (!state.turnstileWidget) {
-      state.turnstileWidget = window.turnstile.render(document.body, {
-        sitekey: state.turnstileKey,
-        callback: (token) => { state.turnstileToken = token; },
-        'expired-callback': () => { state.turnstileToken = null; },
-      });
-      // invisible widget; grab the first token once it appears (BOUND: 8s max —
-      // a slow mobile load of the widget should fail fast with the worker's
-      // clean 403, never sit "typing…" forever)
-      const t0 = Date.now();
-      while (!state.turnstileToken && Date.now() - t0 < 8000) await new Promise((r) => setTimeout(r, 250));
-      return state.turnstileToken || '';
-    }
-    // refresh for subsequent sends — BOUND IT: a reset that never calls back
-    // (locked/expired widget on some mobile stacks) used to hang the entire
-    // send forever, because the 60s overall cap is armed only AFTER this.
-    try {
-      return await Promise.race([
-        new Promise((res) => {
-          window.turnstile.reset(state.turnstileWidget, (tok) => res(tok || ''));
-        }),
-        new Promise((res) => setTimeout(() => res(''), 10000)), // 10s bound -> worker 403s with a friendly message
-      ]);
-    } catch {
-      return ''; // widget in a bad state: let the worker reject with a clean 403
-    }
-  }
+  // ---- Turnstile (single-use token broker) ----
+  // Token logic lives in the top-level apoMakeTurnstileBroker factory
+  // (marker-delimited above the IIFE so tests.js can eval + run the REAL
+  // broker headlessly — section TS). The widget supplies the environment:
+  // window, the script loader, and a 1s "Verifying…" label hook (item 3b).
+  const broker = apoMakeTurnstileBroker({
+    win: window,
+    setSendLabel: (txt) => { const s = $('[data-act="send"]'); if (s && 'title' in s) s.title = txt || ''; },
+    loadScript: loadTurnstileScript,
+  });
+  const getTurnstileToken = () => broker.getToken();
+  const renewTurnstileToken = () => broker.renewToken();
 
   // ---- send flow ----
   async function send() {
@@ -321,14 +405,29 @@
     };
 
     try {
-      const token = await getTurnstileToken();
-      armOverall();
-      const resp = await fetch(API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: state.messages, cf_turnstile_response: token }),
-        signal: ac.signal,
-      });
+      // item 3d: obtain a fresh single-use token and POST. If the server says
+      // the token was expired/duplicate (turnstile_expired — siteverify
+      // rejected with timeout-or-duplicate or invalid-input-response), renew
+      // the token and retry the SAME message ONCE, transparently. The
+      // composer stays disabled the whole time; the finally block below
+      // ALWAYS re-enables it (item 3e).
+      let token = await getTurnstileToken();
+      let resp;
+      for (let attempt = 0; ; attempt++) {
+        armOverall();
+        resp = await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: state.messages, cf_turnstile_response: token }),
+          signal: ac.signal,
+        });
+        if (resp.status !== 403) break;
+        let code = null;
+        try { code = (await resp.clone().json()).error; } catch {}
+        if (code !== 'turnstile_expired' || attempt >= 1) break;
+        token = await renewTurnstileToken();
+        if (!token) break;
+      }
 
       if (!resp.ok || !resp.body) {
         let msg = 'Please use our contact form.';
@@ -382,6 +481,8 @@
       }
 
       if (!fullText.trim()) { typing.remove(); notice('No answer available. Please use our contact form.', true); return; }
+      fullText = apoStripSourcesBlock(fullText);
+      botBox.textContent = fullText; // item 5: re-render the stripped text
       state.messages.push({ role: 'assistant', content: fullText });
       if (leadCapture) renderLeadForm();
     } catch (err) {

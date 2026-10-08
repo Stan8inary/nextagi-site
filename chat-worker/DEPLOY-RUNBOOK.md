@@ -16,7 +16,12 @@ STEP 0 — Preflight (read-only: tests, git log, whoami, KB checks — no state 
            The two main-worker commits it references were made separately; git log shows them.)
 ────────────────────────────────────────────────────────────────────────────────
   cd /home/nextagi/public_html/chat-worker
-  node --import ./test-cf-hook.mjs tests.js          # MUST be 71 passed, 0 failed
+  node --import ./test-cf-hook.mjs tests.js          # MUST be 87+ passed, 0 failed
+  # BUILD STEP — required before tests AND deploy (regenerates src/widget.js from
+  # chat-widget.js and src/knowledge.js from the main-worker page constants):
+  #   node build_knowledge.js
+  # After editing chat-widget.js or site content, run node build_knowledge.js
+  # before testing and deploying. TO16 fails if src/widget.js is stale.
   git -C /home/nextagi/public_html status --short     # review the working tree
   ls -l .dev.vars                                       # confirm test-pair file exists (do NOT read it)
 

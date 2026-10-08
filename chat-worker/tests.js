@@ -75,6 +75,11 @@ globalThis.fetch = async (url, opts = {}) => {
 // ---- import the real worker + the real retrieval module ------------------
 const mod = await import('./src/index.js');
 const worker = mod.default;
+// The pristine harness mock (routes challenges.cloudflare.com -> turnstileResult).
+// Some later tests (REG/FL) override globalThis.fetch and do not restore it;
+// capture this now so we can re-point global fetch before any test that
+// depends on the worker's siteverify call (A7b/c/d).
+const HARNESS_FETCH = globalThis.fetch;
 // Retrieval is imported DIRECTLY (the worker no longer re-exports it — a
 // Workers entrypoint may only export `default` + DO classes).
 const R = await import('./src/retrieval.js');
@@ -1264,6 +1269,239 @@ await t('TO16 built widget sync: src/widget.js embeds chat-widget.js verbatim + 
   assert(/IDLE_MS = 25000/.test(embedded), '25s idle watchdog present in built widget');
   assert(/state\.busy = false/.test(embedded) && /composer input/.test(embedded), 'busy-reset re-enables input in built widget');
 });
+
+
+// ==========================================================================
+// Server: turnstile_expired vs turnstile_failed + m_ log (item 2)
+// ==========================================================================
+// Reset the shared per-IP limiter: the A8 flood test (earlier) exhausted the
+// 20/min budget for this test IP, so any subsequent /api/chat POST would 429
+// before reaching the Turnstile check. Swap in a fresh limiter for A7b/c/d.
+ENV_BASE.Limiter = { instance: makeLimiter() };
+// Re-point global fetch back to the harness mock: later tests (REG/FL) overrode
+// globalThis.fetch without restoring it, which would make the worker's
+// siteverify fetch('challenges.cloudflare.com/...') hit a stale mock (hang).
+globalThis.fetch = HARNESS_FETCH;
+await t('A7b timeout-or-duplicate -> turnstile_expired + m_ log (code logged, token not)', async () => {
+  const before = [...kv.keys()].filter((k) => k.startsWith('m_turnstile_')).length;
+  turnstileResult = { success: false, 'error-codes': ['timeout-or-duplicate'] };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'hi' }], cf_turnstile_response: 'secret-token-do-not-leak' }, origin: 'https://apposight.com' }), ENV_BASE);
+  assert(r.status === 403, 'expected 403 got ' + r.status);
+  const b = await r.json();
+  assert(b.error === 'turnstile_expired', 'expected turnstile_expired, got ' + b.error);
+  assert(b.hint === 'token_renew', 'expected hint=token_renew, got ' + b.hint);
+  const after = [...kv.keys()].filter((k) => k.startsWith('m_turnstile_')).length;
+  assert(after === before + 1, 'expected exactly 1 new m_turnstile log entry, before=' + before + ' after=' + after);
+  const raw = kv.get([...kv.keys()].filter((k) => k.startsWith('m_turnstile_')).sort().pop());
+  assert(raw.includes('timeout-or-duplicate'), 'm_ log must record the siteverify code, got ' + raw);
+  assert(!raw.includes('secret-token-do-not-leak'), 'm_ log must NOT contain the token');
+});
+
+await t('A7c invalid-input-response -> turnstile_expired', async () => {
+  turnstileResult = { success: false, 'error-codes': ['invalid-input-response'] };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'hi' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), ENV_BASE);
+  assert(r.status === 403, 'expected 403');
+  const b = await r.json();
+  assert(b.error === 'turnstile_expired', 'expected turnstile_expired, got ' + b.error);
+});
+
+await t('A7d site-mismatch (non-expired) -> turnstile_failed, no hint', async () => {
+  turnstileResult = { success: false, 'error-codes': ['site-mismatch'] };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'hi' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), ENV_BASE);
+  assert(r.status === 403, 'expected 403');
+  const b = await r.json();
+  assert(b.error === 'turnstile_failed', 'expected turnstile_failed (non-expired), got ' + b.error);
+  assert(b.hint === null || b.hint === undefined, 'non-expired must not carry token_renew hint, got ' + b.hint);
+});
+
+// ==========================================================================
+// TS: widget Turnstile broker — realistic single-use / 300s-TTL mock (item 3)
+// ==========================================================================
+// A STATEFUL single-use server models Cloudflare siteverify exactly: each
+// token is valid exactly once; a second use of the SAME token is rejected
+// with 403 turnstile_expired (the "timeout-or-duplicate" code). That is the
+// phone bug: the OLD widget cached the render token and resent it on Q3.
+{
+  const fs = await import('node:fs');
+  const widgetSrc = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
+  const bStart = widgetSrc.indexOf('// APO_TOKEN_BROKER');
+  const bEnd = widgetSrc.indexOf('// APO_STRIP_SOURCES_END') + '// APO_STRIP_SOURCES_END'.length;
+  assert(bStart !== -1 && bEnd > bStart, 'broker markers present in chat-widget.js');
+  const brokerBlock = widgetSrc.slice(bStart, bEnd);
+  const apoMakeTurnstileBroker = (new Function('win', 'setSendLabel', 'loadScript', brokerBlock + '\nreturn apoMakeTurnstileBroker;'))();
+  const apoStripSourcesBlock = (new Function(brokerBlock + '\nreturn apoStripSourcesBlock;'))();
+
+  const FAKE_DOC = { body: {}, head: { appendChild() {} }, createElement: () => ({}) };
+
+  // Stateful single-use server: accept a token the first time, reject it the
+  // second (siteverify timeout-or-duplicate). Records the token per call.
+  const makeServer = (alwaysReject = false) => {
+    const used = new Set();
+    const calls = [];
+    const of = globalThis.fetch;
+    globalThis.fetch = async (path, opts = {}) => {
+      if (String(path) !== '/api/chat' || !opts || opts.method !== 'POST') return of(path, opts);
+      const tok = JSON.parse(opts.body).cf_turnstile_response;
+      calls.push(tok);
+      if (!tok || alwaysReject || used.has(tok)) {
+        return new Response(JSON.stringify({ error: 'turnstile_expired', hint: 'token_renew' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      }
+      used.add(tok);
+      return new Response('ok', { status: 200 });
+    };
+    return { calls, used, restore: () => { globalThis.fetch = of; } };
+  };
+
+  // Mirror of the widget's send() token flow (item 3d): getToken -> POST ->
+  // on 403 turnstile_expired -> renew -> retry-once. Uses the REAL broker.
+  const makeSendOnce = (broker) => async () => {
+    let token = await broker.getToken();
+    let ok = false, retries = 0;
+    for (let a = 0; ; a++) {
+      const resp = await globalThis.fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 't' }], cf_turnstile_response: token }) });
+      if (resp.status !== 403) { ok = resp.ok; break; }
+      let code; try { code = (await resp.clone().json()).error; } catch {}
+      if (code !== 'turnstile_expired' || a >= 1) break;
+      token = await broker.renewToken();
+      if (!token) break;
+      retries++;
+    }
+    return { ok, retries, token };
+  };
+
+  // TS1: OLD pattern (cache render token, reuse on every send, no reset/retry)
+  // breaks on send 2 — the phone bug. NEW broker pattern (always-mint-fresh +
+  // transparent retry) succeeds all 3.
+  await t('TS1 old pattern breaks on send 2; broker pattern succeeds all 3', async () => {
+    // --- OLD pattern: warm-reuse one cached token; no reset, no retry ---
+    const oldTok = 'renderTok'; // cached from the one turnstile.render() call
+    const srvOld = makeServer();
+    // send 1: use the cached token (first use) -> accepted
+    let resp1 = await globalThis.fetch('/api/chat', { method: 'POST', body: JSON.stringify({ cf_turnstile_response: oldTok }) });
+    assert(resp1.status === 200, 'old send 1 accepted (first use), got ' + resp1.status);
+    // send 2: reuse the SAME cached token (the bug — no reset) -> rejected
+    let resp2 = await globalThis.fetch('/api/chat', { method: 'POST', body: JSON.stringify({ cf_turnstile_response: oldTok }) });
+    assert(resp2.status === 403, 'old send 2 REJECTED: reusing a consumed token fails (the phone bug), got ' + resp2.status);
+    let code2; try { code2 = (await resp2.clone().json()).error; } catch {}
+    assert(code2 === 'turnstile_expired', 'old send 2 error code is turnstile_expired, got ' + code2);
+    srvOld.restore();
+
+    // --- NEW broker pattern: always mint fresh; all 3 sends succeed ---
+    let n = 0;
+    const win = { turnstile: {
+        render: () => 'w',
+        reset: (w, cb) => { n++; setTimeout(() => cb('tok_' + n), 0); },
+        execute: null,
+      }, document: FAKE_DOC };
+    const broker = apoMakeTurnstileBroker({ win, setSendLabel: null, loadScript: null });
+    broker.setSiteKey('k');
+    const srvNew = makeServer();
+    const sendOnce = makeSendOnce(broker);
+    const r1 = await sendOnce(); const r2 = await sendOnce(); const r3 = await sendOnce();
+    assert(r1.ok && r2.ok && r3.ok, 'broker pattern: all 3 sends must succeed, got ' + r1.ok + ',' + r2.ok + ',' + r3.ok);
+    assert(srvNew.calls.length === 3, 'expected 3 chat calls, got ' + srvNew.calls.length);
+    assert(new Set(srvNew.calls).size === 3, 'each send used a distinct single-use token: ' + srvNew.calls.join(','));
+    srvNew.restore();
+  });
+
+  // TS2: 3 sends in a row with fresh single-use tokens — all succeed (item 3a).
+  await t('TS2 3 sends with fresh single-use tokens all succeed', async () => {
+    let n = 0;
+    const win = { turnstile: {
+        render: () => 'w',
+        reset: (w, cb) => { n++; setTimeout(() => cb('tok_' + n), 0); },
+        execute: null,
+      }, document: FAKE_DOC };
+    const broker = apoMakeTurnstileBroker({ win, setSendLabel: null, loadScript: null });
+    broker.setSiteKey('k');
+    const srv = makeServer();
+    const sendOnce = makeSendOnce(broker);
+    const r1 = await sendOnce(); const r2 = await sendOnce(); const r3 = await sendOnce();
+    assert(r1.ok && r2.ok && r3.ok, 'all 3 sends must succeed, got ' + r1.ok + ',' + r2.ok + ',' + r3.ok);
+    assert(srv.calls.length === 3, 'expected 3 chat calls, got ' + srv.calls.length);
+    assert(new Set(srv.calls).size === 3, 'each send used a distinct token: ' + srv.calls.join(','));
+    srv.restore();
+  });
+
+  // TS3: token older than 300s (expired) -> server rejects -> transparent
+  // retry with a fresh token succeeds. The user sees one successful send (3d).
+  await t('TS3 expired token -> transparent retry succeeds (item 3d)', async () => {
+    const win = { turnstile: {
+        render: () => 'w',
+        reset: (w, cb) => { setTimeout(() => cb('fresh_tok'), 0); }, // reset always mints fresh
+        execute: null,
+      }, document: FAKE_DOC };
+    const broker = apoMakeTurnstileBroker({ win, setSendLabel: null, loadScript: null });
+    broker.setSiteKey('k');
+    broker.state.token = 'stale_tok'; // pre-seed: the 300s-old token the phone held
+    // Server rejects the stale token specifically (it was consumed/expired).
+    const used = new Set(['stale_tok']);
+    const calls = [];
+    const of = globalThis.fetch;
+    globalThis.fetch = async (p, o = {}) => {
+      if (String(p) !== '/api/chat' || !o || o.method !== 'POST') return of(p, o);
+      const tok = JSON.parse(o.body).cf_turnstile_response;
+      calls.push(tok);
+      if (!tok || used.has(tok)) return new Response(JSON.stringify({ error: 'turnstile_expired', hint: 'token_renew' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      used.add(tok);
+      return new Response('ok', { status: 200 });
+    };
+    const sendOnce = makeSendOnce(broker);
+    const r = await sendOnce();
+    assert(r.ok === true, 'send must ultimately succeed via the transparent retry, got ok=' + r.ok);
+    assert(r.retries === 1, 'exactly one transparent retry, got ' + r.retries);
+    assert(calls.length === 2, 'expected 2 chat calls (initial + retry), got ' + calls.length);
+    assert(calls[0] === 'stale_tok', 'initial call used the stale token, got ' + calls[0]);
+    assert(calls[1] === 'fresh_tok', 'retry used the fresh token, got ' + calls[1]);
+    globalThis.fetch = of;
+  });
+
+  // TS4: both tokens rejected (retry fails) -> friendly error, broker recoverable.
+  await t('TS4 retry fails -> friendly error + broker not stuck (items 3d/3e)', async () => {
+    let n = 0;
+    const win = { turnstile: {
+        render: () => 'w',
+        reset: (w, cb) => { n++; setTimeout(() => cb('bad_tok_' + n), 0); },
+        execute: null,
+      }, document: FAKE_DOC };
+    const broker = apoMakeTurnstileBroker({ win, setSendLabel: null, loadScript: null });
+    broker.setSiteKey('k');
+    const srv = makeServer(true); // server rejects every token (worst case)
+    const sendOnce = makeSendOnce(broker);
+    const r = await sendOnce();
+    assert(r.ok === false, 'send must fail when both tokens are rejected, got ok=' + r.ok);
+    assert(r.retries === 1, 'exactly one retry (not infinite), got ' + r.retries);
+    assert(srv.calls.length === 2, '2 chat calls (initial + 1 retry), got ' + srv.calls.length);
+    // Item 3e: the broker must not be left stuck (the widget's finally block
+    // re-enables the input). A subsequent getToken must still be able to mint.
+    const again = await broker.getToken();
+    assert(again, 'broker must still mint a fresh token after a failed cycle, got ' + JSON.stringify(again));
+    srv.restore();
+  });
+
+  // TS5: apoStripSourcesBlock — trailing block stripped, mid-sentence kept.
+  await t('TS5 strip trailing Sources block (links + bare + mid-sentence safe)', async () => {
+    const s1 = apoStripSourcesBlock('Answer text.\n\nSources:\n- [a](https://x.com)\n- https://y.com');
+    assert(s1 === 'Answer text.', 'links block stripped, got ' + JSON.stringify(s1));
+    const s2 = apoStripSourcesBlock('See sources above.\nSources: https://z.com');
+    assert(s2 === 'See sources above.', 'bare-URL block stripped, got ' + JSON.stringify(s2));
+    const s3 = apoStripSourcesBlock('We have many sources in our docs.');
+    assert(s3 === 'We have many sources in our docs.', 'mid-sentence "sources" must be kept, got ' + JSON.stringify(s3));
+    const s4 = apoStripSourcesBlock('Top line.\nSources:\n- x\n- y\n\nTrailing content.');
+    assert(s4.includes('Trailing content.'), 'non-trailing block must be kept (content below it), got ' + JSON.stringify(s4));
+  });
+
+  // TS6: the REAL widget source carries the retry loop + finally re-enable.
+  await t('TS6 widget source has 403 retry-once + finally setBusy(false)', async () => {
+    assert(/renewTurnstileToken/.test(widgetSrc), 'widget source calls renewTurnstileToken');
+    assert(/attempt >= 1/.test(widgetSrc), 'widget source caps the retry at one attempt');
+    assert(/code !== 'turnstile_expired'/.test(widgetSrc), 'widget source checks the turnstile_expired code');
+    assert(/finally\s*{[\s\S]*?setBusy\(false\)/.test(widgetSrc), 'widget finally block re-enables the composer');
+    assert(/for \(let attempt = 0; ; attempt\+\+\)/.test(widgetSrc), 'widget uses the attempt loop');
+    assert(/apoStripSourcesBlock\(fullText\)/.test(widgetSrc), 'widget strips the trailing Sources block');
+  });
+}
+
 
 console.log(`\n== RESULT: ${pass} passed, ${fail} failed ==\n`);
 process.exit(fail ? 1 : 0);

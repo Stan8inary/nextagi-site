@@ -223,13 +223,24 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   }
 
   // Sources (what the UI shows as chips):
-  //   grounded -> distinct URLs of the top-3 chunks ACTUALLY sent to the model
+  //   grounded -> distinct URLs of the ACTUAL top-3 chunks sent to the model,
+  //               ordered by their BEST chunk score (best match first). The
+  //               old order was first-appearance in the selected list, so a
+  //               page whose single chunk ranked above the target page's best
+  //               chunk got listed first (observed: "how long did the DC
+  //               upgrade take?" -> aks-employee-portal (28.5) ahead of
+  //               dc-upgrade (19.64)).
   //   social   -> HOME + ABOUT only (what the model is grounded on)
   //   buying   -> HOME + ABOUT only (same context; + lead-capture offer)
   //   canned   -> none (the UI hides the empty label)
   let sources;
   if (mode === 'grounded') {
-    sources = [...new Set(selected.slice(0, 3).map((c) => c.url))];
+    const bestBy = new Map(); // url -> { s, url }
+    for (const r of ranked.slice(0, 3)) {
+      const cur = bestBy.get(r.ch.url);
+      if (!cur || r.s > cur.s) bestBy.set(r.ch.url, { s: r.s, url: r.ch.url });
+    }
+    sources = [...bestBy.values()].sort((a, b) => (b.s - a.s) || (a.url < b.url ? -1 : 1)).map((b) => b.url);
   } else if (mode === 'social') {
     sources = ['/', '/about'];
   } else {

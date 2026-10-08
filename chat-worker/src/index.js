@@ -232,21 +232,42 @@ async function callModel({ model, apiKey, systemPrompt, messages, timeoutMs = 20
 // ---------------------------------------------------------------------------
 // Turnstile verification (fail-closed)
 // ---------------------------------------------------------------------------
+// Returns { ok: true } or { ok: false, error_code } where error_code is the
+// siteverify rejection reason (e.g. "timeout-or-duplicate",
+// "invalid-input-response", "success") or a transport-level code
+// ("no-token", "no-secret", "http-<status>", "parse-error", "network-error").
+// The token itself is NEVER logged — only the siteverify error code.
 async function verifyTurnstile(token, env) {
-  if (!token) return false;
-  if (!env.TURNSTILE_SECRET) return false;
+  if (!token) return { ok: false, error_code: 'no-token' };
+  if (!env.TURNSTILE_SECRET) return { ok: false, error_code: 'no-secret' };
   try {
     const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token }),
     });
-    if (!r.ok) return false;
+    if (!r.ok) return { ok: false, error_code: 'http-' + r.status };
     const data = await r.json();
-    return data.success === true;
+    if (data.success === true) return { ok: true };
+    return { ok: false, error_code: (data && data['error-codes'] && data['error-codes'][0]) || 'unknown' };
   } catch {
-    return false;
+    return { ok: false, error_code: 'network-error' };
   }
+}
+
+// Operator log for Turnstile verifications that FAILED. Records ONLY the
+// siteverify error code (timeout-or-duplicate, invalid-input-response, …) +
+// a timestamp — NEVER the token. m_ prefix, 30-day TTL, fire-and-forget.
+function logTurnstileFailure(errorCode, env) {
+  try {
+    if (!env.KV_LOG) return;
+    const key = 'm_turnstile_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    env.KV_LOG.put(key, JSON.stringify({
+      ts: new Date().toISOString(),
+      kind: 'turnstile',
+      error_code: String(errorCode || 'unknown'),
+    }), { expirationTtl: QUESTION_LOG_TTL });
+  } catch { /* logging must never break chat */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,8 +433,20 @@ async function handleChat(request, env) {
   if (!ipd.allowed) return json({ error: 'rate_limited' }, 429, corsHeaders(originHost));
 
   // --- Turnstile (every request; single-use tokens) ---
-  const turnstileOk = await verifyTurnstile(body && body.cf_turnstile_response, env);
-  if (!turnstileOk) return json({ error: 'turnstile_failed' }, 403, corsHeaders(originHost));
+  // Distinct codes:
+  //   turnstile_expired -> the token is stale/reused (timeout-or-duplicate,
+  //                        invalid-input-response). The widget uses this to
+  //                        fetch a FRESH token and transparently retry once.
+  //   turnstile_failed  -> everything else (bad token, site mismatch, …).
+  const tv = await verifyTurnstile(body && body.cf_turnstile_response, env);
+  if (!tv.ok) {
+    logTurnstileFailure(tv.error_code, env);
+    const expired = tv.error_code === 'timeout-or-duplicate' || tv.error_code === 'invalid-input-response';
+    return json(
+      { error: expired ? 'turnstile_expired' : 'turnstile_failed', hint: expired ? 'token_renew' : null },
+      403, corsHeaders(originHost)
+    );
+  }
 
   // --- Daily GLOBAL cap — only charged for verified requests ---
   let d;
