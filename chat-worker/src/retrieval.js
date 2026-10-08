@@ -162,6 +162,25 @@ const BUYING_RE = /\b(pricing|price|prices|cost|costs|quote|quotes|demo|demos|hi
 export function isSocial(q) { return SOCIAL_RE.test(q); }
 export function isBuying(q) { return BUYING_RE.test(q); }
 
+// Item 3 (use-case listing): a question that asks for OUR services / use cases
+// / offerings / capabilities / projects — "what do you do/offer", "use cases",
+// "list of your work", "what projects". These must route to the /Use-Cases
+// listing page AND every use-case detail page so the answer can enumerate all
+// of them. Buying-intent takes precedence over listing (checked first).
+//
+// Deliberate narrow matches so we never capture off-topic queries:
+//   - "use case(s)"          (a use-case noun, not the word "use" alone)
+//   - "what do you do/offer" (brand + listing; "AppoSight do" is NOT matched)
+//   - services / offerings / capabilities / projects (explicit listing nouns)
+//   - "list" + a company/work word ("list of your work", "list your services"),
+//     so a bare "list the CIS controls" (a specific technical question) stays
+//     grounded instead of flipping to the listing page.
+// Two patterns combined by isListing() (JS `||` on two regex objects would
+// always return the first — so we test both explicitly).
+const LISTING_A = /\b(use ?cases?|what do you (do|offer)|services?|offerings|capabilities?|projects?)\b/i;
+const LISTING_B = /\blist\b.*\b(your|our|apposight|services?|projects?|use ?cases?|work|offerings?|capabilit)/i;
+export function isListing(q) { const s = String(q || ''); return LISTING_A.test(s) || LISTING_B.test(s); }
+
 // ---------------------------------------------------------------------------
 // THRESHOLD: a query "matches" when the best chunk contains at least one
 // non-stopword query term. Justification: every retained term has IDF >= 1,
@@ -193,15 +212,27 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
     .slice(0, topK);
 
   const topScore = ranked.length ? ranked[0].s : 0;
+  // Item 3: a "listing" query asks for our services / use cases / offerings /
+  // capabilities / projects. Buying intent takes precedence (lead capture).
+  // A listing query resolves to 'listing' mode (social-style context + the
+  // /Use-Cases listing + every use-case detail page) so handleChat never
+  // short-circuits it to canned.
+  const listingQuery = isListing(query);
   let mode;
-  if (topScore >= THRESHOLD && !isBuying(query)) mode = 'grounded';
-  else if (isBuying(query)) mode = 'social'; // buying -> social mode + lead-capture offer at the worker
+  if (isBuying(query)) mode = 'social'; // buying -> social mode + lead-capture offer
+  else if (listingQuery) mode = (topScore >= THRESHOLD) ? 'grounded' : 'social';
+  else if (topScore >= THRESHOLD) mode = 'grounded';
   else if (isSocial(query)) mode = 'social'; // greeting / brand -> social, WITH home+about context
   else mode = 'canned';
 
   // Enforce the ~12k char cap on retrieved content (keep top-ranked chunks).
   let selected = [];
   let chars = 0;
+  const pushIf = (ch) => {
+    if (!ch) return;
+    if (chars + ch.text.length > charCap) return;
+    selected.push(ch); chars += ch.text.length;
+  };
   if (mode === 'grounded') {
     for (const r of ranked) {
       if (chars >= charCap) break;
@@ -212,13 +243,25 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
     // Brand / smalltalk ("who are you", "what does AppoSight do"): give the
     // model the HOME + ABOUT pages (first content chunk of each) so it can
     // describe AppoSight accurately, instead of guessing from the index alone.
-    for (const url of ['/', '/about']) {
-      const ch = CHUNKS.find((c) => c.url === url);
-      if (ch) {
-        if (chars + ch.text.length > charCap) continue;
-        selected.push(ch);
-        chars += ch.text.length;
-      }
+    pushIf(CHUNKS.find((c) => c.url === '/'));
+    pushIf(CHUNKS.find((c) => c.url === '/about'));
+  }
+
+  // Item 3 (use-case listing): ALWAYS include the /Use-Cases listing chunk
+  // plus one chunk from EVERY use-case detail page so the model can enumerate
+  // all use cases by title. Appended AFTER the ranked chunks (grounded) or
+  // home+about (social) so the primary topical context still leads.
+  if (listingQuery && !isBuying(query)) {
+    const seen = new Set(selected.map((c) => c.url + '|' + (c.heading || '')));
+    const add = (ch) => {
+      if (!ch) return;
+      const key = ch.url + '|' + (ch.heading || '');
+      if (seen.has(key)) return;
+      pushIf(ch); if (selected[selected.length - 1] === ch) seen.add(key);
+    };
+    add(CHUNKS.find((c) => c.url === '/Use-Cases'));
+    for (const p of knowledge.filter((k) => k.url.startsWith('/use-cases/'))) {
+      add(CHUNKS.find((c) => c.url === p.url));
     }
   }
 
@@ -246,6 +289,21 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   } else {
     sources = [];
   }
+  // Item 3: a listing query's chips must include the /Use-Cases listing page
+  // (the answer is grounded on it), even if the ranked top-3 didn't surface it.
+  if (listingQuery && !sources.includes('/Use-Cases')) {
+    sources = ['/Use-Cases', ...sources.filter((u) => u !== '/Use-Cases')];
+  }
+
+  // Item 3: the canonical list of use-case page titles (listing page + one per
+  // detail page), for the answer prompt + the test assertion that the model is
+  // asked to enumerate every use case.
+  const useCaseTitles = listingQuery
+    ? knowledge
+        .filter((k) => k.url === '/Use-Cases' || k.url.startsWith('/use-cases/'))
+        .map((k) => ({ title: k.title, url: k.url }))
+    : [];
+
   return {
     query,
     topScore: Math.round(topScore * 100) / 100,
@@ -254,6 +312,7 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
     chunks: selected,
     chars,
     sources,
+    useCaseTitles,
     tokenEstimate: Math.round((BASE_CONTEXT_CHARS + chars) / 4),
   };
 }

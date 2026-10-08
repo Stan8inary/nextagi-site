@@ -83,11 +83,21 @@ const HARNESS_FETCH = globalThis.fetch;
 // Retrieval is imported DIRECTLY (the worker no longer re-exports it — a
 // Workers entrypoint may only export `default` + DO classes).
 const R = await import('./src/retrieval.js');
+const T = await import('./src/text.js'); // stripInlineRefs / safePrefix (item 5c)
 
 // Token estimate for "index only" modes (social / buying):
 // (BASE_CONTEXT_CHARS) / 4, where BASE_CONTEXT_CHARS = 1200 (rules) + index
 // chars (title+url+summary per page). Grounded adds chunk chars on top.
 const EXPECTED_INDEX_TOKENS = Math.round(R.BASE_CONTEXT_CHARS / 4);
+
+// A worker env with an UNLIMITED limiter. Tests that call the model (grounded
+// / social routing) must each run on a fresh limiter, because ENV_BASE's
+// shared makeLimiter(ipLimit=20 / dailyLimit=500) is a per-process counter
+// that accumulates across the whole file — a batch of model-calling tests can
+// exhaust it and make a LATER test (e.g. the old P1 QUALITATIVE test below)
+// hit rate_limited_ip / daily_cap and return a canned 429 with NO model call
+// (lastModel stays null). A fresh unlimited limiter per such test isolates it.
+const freshLimiterEnv = () => ({ ...ENV_BASE, Limiter: { instance: makeLimiter({ ipLimit: 100000, dailyLimit: 100000 }) } });
 
 const ENV_BASE = {
   Limiter: { instance: makeLimiter() },
@@ -489,6 +499,280 @@ await t('R13 SSE done event: sources come from retrieved chunk URLs', async () =
 });
 
 // ===========================================================================
+// PHONE-TEST (2026-10-08) — items 1, 3, 4, 5 from the phone-test results.
+// No model, no network: retrieval + structural prompt assertions + the pure
+// text helpers, driven through the REAL worker module.
+// ===========================================================================
+
+// Item 3: the required probe must retrieve /Use-Cases AND every use-case page.
+await t('P3 use-case listing: "What use cases do you have?" -> /Use-Cases + all detail pages', async () => {
+  const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
+  const usePages = kb.filter((p) => p.url === '/Use-Cases' || p.url.startsWith('/use-cases/'));
+  assert(usePages.length >= 2, 'knowledge has multiple use-case pages, got ' + usePages.length);
+  const r = R.retrieve('What use cases do you have?');
+  assert(r.chunks.some((c) => c.url === '/Use-Cases'), '/Use-Cases listing chunk retrieved');
+  const urls = r.chunks.map((c) => c.url);
+  for (const p of usePages) assert(urls.includes(p.url), 'use-case page in context: ' + p.url);
+  assert(r.useCaseTitles.length === usePages.length, 'useCaseTitles count matches KB, got ' + r.useCaseTitles.length);
+  assert(r.sources.includes('/Use-Cases'), 'sources chips include /Use-Cases');
+});
+
+// Item 3: the ANSWER PROMPT must name every use-case page (no omission).
+await t('P3b answer prompt names EVERY use-case page title (no omission)', async () => {
+  const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
+  const titles = kb.filter((p) => p.url === '/Use-Cases' || p.url.startsWith('/use-cases/')).map((p) => p.title);
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'What use cases do you have?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  assert(lastModel, 'model called for listing query');
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('USE-CASE LISTING'), 'listing rule present in prompt');
+  assert(sp.includes('LIST EVERY use case'), 'instructed to list all');
+  for (const t of titles) assert(sp.includes(t), 'prompt names use-case: ' + t);
+});
+
+// Item 3: the other listing phrasings from the phone-test all route to listing.
+await t('P3c "what do you offer"/"services"/"capabilities"/"projects"/"list of your work" all route to listing', async () => {
+  for (const q of ['what do you offer', 'services', 'capabilities', 'projects', 'list of your work', 'list your services']) {
+    const r = R.retrieve(q);
+    assert(r.chunks.some((c) => c.url === '/Use-Cases'), q + ' -> /Use-Cases in context');
+    assert(r.useCaseTitles.length >= 9, q + ' -> full use-case title set, got ' + r.useCaseTitles.length);
+  }
+});
+
+// Item 3: NON-listing queries must NOT over-match into the listing set.
+await t('P3d NON-listing queries stay grounded (no over-match)', async () => {
+  for (const q of ['what is EntraSync', 'How long did the DC upgrade take?', 'list the CIS controls', 'list the FSMO roles', 'weather in tokyo']) {
+    const r = R.retrieve(q);
+    assert(r.useCaseTitles.length === 0, q + ' -> no use-case listing, got ' + r.useCaseTitles.length);
+  }
+});
+
+// Item 4: brand answer is grounded on home+about, 3-4 short lines, covers the
+// home service areas, and must NOT name people/companies/figures not in excerpts.
+await t('P4 brand prompt: home+about grounded, 3-4 lines, no invented names', async () => {
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'what does AppoSight do' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('<reference_data>'), 'brand grounded on home+about');
+  assert(/3-4 short lines/.test(sp), '3-4 short lines instruction');
+  assert(sp.includes('service areas'), 'home service areas covered');
+  assert(/do not name any person, company, or figure that\s+is not in the excerpts/i.test(sp), 'no-invented-names rule present');
+});
+
+// Item 5a: no inline citations / bracketed refs / "Sources:" in the answer.
+await t('P5a system prompt forbids inline citations / bracketed refs / Sources list', async () => {
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'What use cases do you have?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('do NOT put inline citations'), 'no-inline-citation rule');
+  assert(/source chips/i.test(sp), 'UI source-chips note present');
+  assert(sp.includes('"Sources:" list'), 'no "Sources:" list rule (exact text)');
+});
+
+// Item 5b: contact form ONLY when the answer is incomplete/unknown.
+await t('P5b system prompt: contact form only when incomplete or unknown', async () => {
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'How long did the DC upgrade take?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(/MENTION THE CONTACT FORM/i.test(sp), 'conditional contact-form rule present');
+  assert(/ONLY WHEN YOUR ANSWER IS\s+INCOMPLETE OR YOU DO NOT KNOW/i.test(sp), 'condition explicit (incomplete/unknown)');
+});
+
+// Item 5c: the tested strip helper removes inline citation artifacts only,
+// leaving legit brackets ([redacted], [OK], [v2]) intact.
+await t('P5c stripInlineRefs: numbered + bracketed-URL cites removed; legit brackets kept', async () => {
+  const s = T.stripInlineRefs;
+  // numbered label [1. x] -> removed (may leave a stray space before a period;
+  // assert the CITE is gone, not the exact punctuation)
+  let o = s('See our CIS audit [1. Summary].');
+  assert(!o.includes('[1. Summary]') && o.includes('See our CIS audit'), 'numbered label stripped, got ' + JSON.stringify(o));
+  // bracketed "Title | Site - URL" -> removed
+  o = s('Read [Title | AppoSight - https://www.apposight.com/page].');
+  assert(!o.includes('https://') && o.includes('Read'), 'bracketed URL cite stripped, got ' + JSON.stringify(o));
+  // mixed: [2) Results] AND bare [3] both removed
+  o = s('See [2) Results] and [3].');
+  assert(!o.includes('[2) Results]') && !o.includes('[3]') && o.includes('See'), 'numbered + bare cite stripped, got ' + JSON.stringify(o));
+  // legit brackets are KEPT
+  o = s('Our tool (v2) keeps [redacted] and [OK] text.');
+  assert(o.includes('[redacted]') && o.includes('[OK]') && o.includes('(v2)'), 'legit brackets kept, got ' + JSON.stringify(o));
+  // a bare incomplete "[1" with no closing bracket is left for safePrefix to hold
+  o = s('AppoSight builds [1');
+  assert(o.includes('[1'), 'incomplete bracket left for safePrefix, got ' + JSON.stringify(o));
+});
+
+// Item 5c: safePrefix holds back a trailing partial citation (unclosed '[').
+await t('P5c2 safePrefix: holds trailing unclosed bracket; passes closed/none', async () => {
+  const s = T.safePrefix;
+  assert(s('AppoSight builds [1') === 'AppoSight builds ', 'partial "[1" held back, got ' + JSON.stringify(s('AppoSight builds [1')));
+  assert(s('AppoSight builds.') === 'AppoSight builds.', 'no bracket unchanged');
+  assert(s('AppoSight builds [OK] work.') === 'AppoSight builds [OK] work.', 'closed legit bracket passes');
+});
+
+// Item 5d: the widget linkifies /#contact + bare apposight URLs SAFELY.
+// BEHAVIORAL: we extract the real apoRenderLinks from chat-widget.js and run it
+// against a stub DOM that THROWS if innerHTML is ever assigned (so any raw-model
+// innerHTML is caught), then assert the actual link + injection outcomes.
+await t('P5d widget: apoRenderLinks linkifies contact + apposight URLs, injection inert', async () => {
+  const ws = await (await import('node:fs/promises')).readFile('./chat-widget.js', 'utf8');
+  assert(/function apoRenderLinks/.test(ws), 'apoRenderLinks defined');
+  assert(/apoRenderLinks\(botBox, fullText\)/.test(ws), 'delta path renders via apoRenderLinks');
+  assert(/apoRenderLinks\(botBox, ''\)/.test(ws), 'error path clears via apoRenderLinks');
+  const helperSrc = ws.slice(ws.indexOf('function apoRenderLinks'), ws.indexOf('// APO_RENDER_LINKS_END'));
+
+  // Stub DOM. An innerHTML SETTER THROWS on the container and on any created
+  // element, so if the helper ever did `x.innerHTML = text` (raw model text),
+  // this test fails — proving the textContent-only path.
+  const makeContainer = () => {
+    const kids = [];
+    const c = {
+      get firstChild() { return kids[0] || null; },
+      removeChild(n) { const idx = kids.indexOf(n); if (idx >= 0) kids.splice(idx, 1); },
+      appendChild(n) { kids.push(n); },
+      text() { return kids.map((k) => k.textContent).join(''); },
+      links() { return kids.filter((k) => k.tagName === 'A'); },
+    };
+    Object.defineProperty(c, 'innerHTML', { configurable: true, get() { return ''; },
+      set() { throw new Error('container.innerHTML assigned - raw model text is NOT safe'); } });
+    return c;
+  };
+  const doc = {
+    createTextNode(t) { return { textContent: String(t) }; },
+    createElement(tag) {
+      const e = { tagName: String(tag).toUpperCase(), textContent: '', href: undefined, target: undefined, rel: undefined };
+      Object.defineProperty(e, 'innerHTML', { configurable: true, get() { return ''; },
+        set() { throw new Error('element.innerHTML assigned - raw model text is NOT safe'); } });
+      return e;
+    },
+  };
+  const run = (text) => {
+    const c = makeContainer();
+    new Function('document', 'container', 'text', helperSrc + '\napoRenderLinks(container, text);')(doc, c, text);
+    return c;
+  };
+
+  // 1) /#contact -> a tappable SAME-SITE link (relative href, no new tab)
+  let c = run('Visit us at /#contact today.');
+  let L = c.links();
+  assert(L.length === 1, 'one <a> for /#contact, got ' + L.length);
+  assert(L[0].href === '/#contact', 'contact href is relative, got ' + L[0].href);
+  assert(!L[0].target, 'contact is same-site (no _blank), got ' + L[0].target);
+  assert(c.text().includes('/#contact'), 'contact label preserved as text');
+
+  // 2) bare absolute apposight.com URL -> linkified, new tab + noopener
+  c = run('See https://www.apposight.com/Use-Cases for more.');
+  L = c.links();
+  assert(L.length === 1, 'one <a> for the apposight URL, got ' + L.length);
+  assert(L[0].href === 'https://www.apposight.com/Use-Cases', 'apposight href, got ' + L[0].href);
+  assert(L[0].target === '_blank', 'opens new tab, got ' + L[0].target);
+  assert(/noopener/.test(L[0].rel || ''), 'rel=noopener, got ' + L[0].rel);
+
+  // 3) a NON-apposight absolute URL is NOT linkified (stays plain text)
+  c = run('See https://evil.example.com/x for info.');
+  assert(c.links().length === 0, 'foreign URL not linkified, got ' + c.links().length);
+  assert(c.text().includes('https://evil.example.com/x'), 'foreign URL rendered as literal text');
+
+  // 4) prompt-injection: raw HTML is INERT (textContent, never innerHTML).
+  //    If the helper had done container.innerHTML = text, our stub THROWS above.
+  const inj = '<script>window.x=1</script><img src=x onerror=alert(1)>';
+  c = run('Here is a payload: ' + inj + ' end.');
+  assert(c.links().length === 0, 'injection produced no <a> elements');
+  assert(c.text().includes('<script>window.x=1</script>'), 'script tag rendered as LITERAL text (inert)');
+  assert(c.text().includes('<img src=x onerror=alert(1)>'), 'img onerror rendered as LITERAL text (inert)');
+});
+
+// ===========================================================================
+// A2 GOLDEN — fully assembled system prompt per mode.
+// Asserts EVERY expected rule marker appears EXACTLY ONCE, no NaN/undefined/
+// false/empty-string rule entries, and reports the final char count per mode.
+// Counted over the RULES REGION (text before "RETRIEVED CONTEXT:") so site
+// content in the reference block can't cause false positives. Driven through
+// the REAL worker (worker.fetch -> captured model call), the same proven
+// path the P-tests use — no exported-function dependency.
+// ===========================================================================
+const countOcc = (str, sub) => str.split(sub).length - 1;
+async function promptRulesRegion(q) {
+  globalThis.fetch = HARNESS_FETCH; // pristine mock (Gemini + turnstile ok)
+  lastModel = null;
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: q }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  assert(lastModel, 'model was called for golden probe: ' + q);
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  const i = sp.indexOf('RETRIEVED CONTEXT:');
+  const region = i === -1 ? sp : sp.slice(0, i);
+  return { sp, region };
+}
+
+await t('G1a GOLDEN grounded prompt: every core rule marker exactly once, no NaN/undefined/false/empty', async () => {
+  const { sp, region } = await promptRulesRegion('How long did the DC upgrade take?');
+  const once = [
+    'HARD RULES', 'UNTRUSTED CONTENT',
+    '- QUALITATIVE INFO:', '- STYLE: do NOT put inline citations',
+    '- MENTION THE CONTACT FORM', 'service areas',
+    'Do not name any person, company, or figure',
+  ];
+  for (const m of once) assert(countOcc(region, m) === 1, 'grounded: marker exactly once: "' + m + '" (got ' + countOcc(region, m) + ')');
+  // PAGE INDEX is the header of the index block in the RETRIEVED CONTEXT section
+  assert(countOcc(sp, 'PAGE INDEX') === 1, 'grounded: PAGE INDEX exactly once (got ' + countOcc(sp, 'PAGE INDEX') + ')');
+  for (const bad of ['NaN', 'undefined', 'false']) assert(!region.includes(bad), 'grounded: no "' + bad + '" in rules');
+  // "no empty-string rule entries" (the .filter(Boolean) drop bug) is enforced by
+  // the exact-once marker checks above: if a rule line were dropped, its marker
+  // count would be 0 and the test would fail. Blank separator lines are intentional.
+  // buying + listing must be ABSENT in grounded mode
+  assert(!region.includes('BUYING INTENT'), 'grounded: no buying rule');
+  assert(!region.includes('USE-CASE LISTING'), 'grounded: no listing rule');
+  assert(!region.includes('[[LEAD_CAPTURE]]'), 'grounded: no lead-capture marker');
+  assert(sp.length > 0, 'grounded: prompt non-empty');
+  console.log('    [G1a] grounded  rules_region=' + region.length + ' chars, full_prompt=' + sp.length + ' chars');
+});
+
+await t('G1b GOLDEN brand prompt: 3-4 line rule once, no buying/listing, no NaN/undefined/false', async () => {
+  const { sp, region } = await promptRulesRegion('what does AppoSight do');
+  const once = ['HARD RULES', 'UNTRUSTED CONTENT', '- QUALITATIVE INFO:', '- STYLE: do NOT put inline citations', '- MENTION THE CONTACT FORM', '3-4 short lines', 'Do not name any person, company, or figure'];
+  for (const m of once) assert(countOcc(region, m) === 1, 'brand: marker exactly once: "' + m + '" (got ' + countOcc(region, m) + ')');
+  for (const bad of ['NaN', 'undefined', 'false']) assert(!region.includes(bad), 'brand: no "' + bad + '" in rules');
+  assert(!region.includes('BUYING INTENT'), 'brand: no buying rule');
+  assert(!region.includes('USE-CASE LISTING'), 'brand: no listing rule');
+  assert(!sp.includes('[[LEAD_CAPTURE]]'), 'brand: no lead-capture marker');
+  assert(sp.includes('<reference_data>'), 'brand: home+about reference block present');
+  console.log('    [G1b] brand     rules_region=' + region.length + ' chars, full_prompt=' + sp.length + ' chars');
+});
+
+await t('G1c GOLDEN listing prompt: USE-CASE LISTING + every use-case title exactly once', async () => {
+  const { sp, region } = await promptRulesRegion('What use cases do you have?');
+  const once = ['HARD RULES', 'UNTRUSTED CONTENT', '- QUALITATIVE INFO:', '- STYLE: do NOT put inline citations', '- MENTION THE CONTACT FORM', '- USE-CASE LISTING:', 'LIST EVERY use case', 'Use-case pages to enumerate:'];
+  for (const m of once) assert(countOcc(region, m) === 1, 'listing: marker exactly once: "' + m + '" (got ' + countOcc(region, m) + ')');
+  for (const bad of ['NaN', 'undefined', 'false']) assert(!region.includes(bad), 'listing: no "' + bad + '" in rules');
+  assert(!region.includes('BUYING INTENT'), 'listing: no buying rule');
+  // every use-case title present exactly once in the enumerated list
+  const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
+  const titles = kb.filter((p) => p.url === '/Use-Cases' || p.url.startsWith('/use-cases/')).map((p) => p.title);
+  assert(titles.length >= 9, 'KB has >= 9 use-case pages, got ' + titles.length);
+  for (const t of titles) assert(countOcc(region, t) === 1, 'listing: title exactly once: ' + t + ' (got ' + countOcc(region, t) + ')');
+  console.log('    [G1c] listing   rules_region=' + region.length + ' chars, full_prompt=' + sp.length + ' chars');
+});
+
+await t('G1d GOLDEN buying prompt: BUYING INTENT + [[LEAD_CAPTURE]] once, no listing', async () => {
+  const { sp, region } = await promptRulesRegion('pricing');
+  const once = ['HARD RULES', 'UNTRUSTED CONTENT', '- QUALITATIVE INFO:', '- STYLE: do NOT put inline citations', '- MENTION THE CONTACT FORM', '- The visitor shows BUYING INTENT', '[[LEAD_CAPTURE]]'];
+  for (const m of once) assert(countOcc(region, m) === 1, 'buying: marker exactly once: "' + m + '" (got ' + countOcc(region, m) + ')');
+  for (const bad of ['NaN', 'undefined', 'false']) assert(!region.includes(bad), 'buying: no "' + bad + '" in rules');
+  assert(!region.includes('USE-CASE LISTING'), 'buying: no listing rule');
+  console.log('    [G1d] buying    rules_region=' + region.length + ' chars, full_prompt=' + sp.length + ' chars');
+});
+
+// Item 1 (VERIFY): the "Stanley Zheng / IT operations professional" claim is
+// grounded in the knowledge base (NOT a hallucination). The /about page names
+// him; the brand rule above (P4) forbids naming people not in the excerpts, so
+// a mock with NO person name would correctly refuse to invent one.
+await t('P1 VERIFY: Stanley Zheng claim is grounded in the KB (not a hallucination)', async () => {
+  const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
+  const about = kb.find((p) => p.url === '/about');
+  assert(about, '/about page present in KB');
+  assert(/Stanley\s+Zheng/.test(about.text), 'Stanley Zheng named on /about');
+  assert(/IT operations professional/i.test(about.text), 'IT-operations-professional title on /about');
+  // the guardrail that keeps this honest: no person may be named unless the
+  // excerpt contains the name (the brand rule from item 4 / P4).
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who is behind AppoSight?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(/do not name any person, company, or figure that\s+is not in the excerpts/i.test(sp), 'no-invented-person rule active');
+});
+
+// ===========================================================================
 // NEEDLE TESTS (item 4) — 8 concrete facts, natural visitor question, the
 // fact-chunk must rank in the top-5. Verified verbatim against the KB.
 // ===========================================================================
@@ -787,9 +1071,7 @@ function makeKV() {
     get: async (k) => m.get(k),
   };
 }
-// Fresh, effectively-unlimited limiter so REG worker-level POSTs don't collide
-// with the shared 'unknown' per-minute bucket that earlier tests drained.
-const freshLimiterEnv = () => ({ ...ENV_BASE, Limiter: { instance: makeLimiter({ ipLimit: 100000, dailyLimit: 100000 }) } });
+// (freshLimiterEnv is defined near the top of this file, above the P-tests.)
 async function textDeltas(r) {
   const txt = await r.text();
   const blocks = txt.split('\n\n');
@@ -1205,7 +1487,7 @@ await t('TO13 widget: send() has a 60s overall AbortController cap', async () =>
   const src = fs.readFileSync(new URL('./chat-widget.js', import.meta.url), 'utf8');
   assert(/OVERALL_MS = 60000/.test(src), '60000ms overall cap constant present');
   assert(/new AbortController\(\)/.test(src), 'AbortController used for the fetch');
-  assert(/signal: ac\.signal/.test(src), 'fetch uses the abort signal');
+  assert(/ac\.signal/.test(src), 'fetch uses the abort signal');
 });
 
 await t('TO14 widget: 25s idle watchdog on the SSE reader loop', async () => {
@@ -1491,14 +1773,82 @@ await t('A7d site-mismatch (non-expired) -> turnstile_failed, no hint', async ()
     assert(s4.includes('Trailing content.'), 'non-trailing block must be kept (content below it), got ' + JSON.stringify(s4));
   });
 
-  // TS6: the REAL widget source carries the retry loop + finally re-enable.
-  await t('TS6 widget source has 403 retry-once + finally setBusy(false)', async () => {
-    assert(/renewTurnstileToken/.test(widgetSrc), 'widget source calls renewTurnstileToken');
-    assert(/attempt >= 1/.test(widgetSrc), 'widget source caps the retry at one attempt');
-    assert(/code !== 'turnstile_expired'/.test(widgetSrc), 'widget source checks the turnstile_expired code');
+  // TS6: the REAL widget source carries the retry helper + finally re-enable.
+  await t('TS6 widget source has retry-once (apoFetchWithRetry) + finally setBusy(false)', async () => {
+    assert(/function apoFetchWithRetry/.test(widgetSrc), 'widget defines apoFetchWithRetry helper');
+    assert(/apoFetchWithRetry\(/.test(widgetSrc), 'widget send() calls apoFetchWithRetry');
+    assert(/getTurnstileToken/.test(widgetSrc), 'widget passes getTurnstileToken to the retry helper');
+    assert(/renewTurnstileToken/.test(widgetSrc), 'widget passes renewTurnstileToken to the retry helper');
+    assert(/turnstile_expired/.test(widgetSrc), 'widget handles the turnstile_expired code');
     assert(/finally\s*{[\s\S]*?setBusy\(false\)/.test(widgetSrc), 'widget finally block re-enables the composer');
-    assert(/for \(let attempt = 0; ; attempt\+\+\)/.test(widgetSrc), 'widget uses the attempt loop');
     assert(/apoStripSourcesBlock\(fullText\)/.test(widgetSrc), 'widget strips the trailing Sources block');
+  });
+
+  // A3: behavioral — the REAL apoFetchWithRetry, extracted from the widget,
+  // retries ONCE with a fresh Turnstile token when the first fetch REJECTS
+  // (pre-byte network error) and the second SUCCEEDS. The user sees a
+  // successful response, NOT the "Network error" notice.
+  const retryStart = widgetSrc.indexOf('function apoFetchWithRetry');
+  const retryEnd = widgetSrc.indexOf('// APO_FETCH_RETRY_END') + '// APO_FETCH_RETRY_END'.length;
+  assert(retryStart !== -1 && retryEnd > retryStart, 'apoFetchWithRetry block present in chat-widget.js');
+  const retrySrc = widgetSrc.slice(retryStart, retryEnd);
+  // The widget helper is a FACTORY: apoFetchWithRetry(fetchImpl, getFreshToken, renewToken)
+  // -> (url, baseBody, signal) => Promise<Response>. No free fetch needed.
+  const apoFetchWithRetryFactory = (new Function(retrySrc + '\nreturn apoFetchWithRetry;'))();
+  const makeFetcher = (stubFetch, getFresh, renew) => apoFetchWithRetryFactory(stubFetch, getFresh, renew);
+
+  await t('A3 first fetch rejects (pre-byte), second succeeds -> ONE retry with a fresh token, no error shown', async () => {
+    const fetchCalls = [];
+    let tokenSeq = 0;
+    const stubFetch = async (url, opts) => {
+      const tok = JSON.parse(opts.body).cf_turnstile_response;
+      fetchCalls.push({ url, token: tok });
+      if (fetchCalls.length === 1) {
+        // pre-byte network failure (throw BEFORE any response bytes)
+        const e = new Error('connection reset before headers');
+        e.name = 'NetworkError';
+        throw e;
+      }
+      return { ok: true, status: 200, body: new ReadableStream({ start(c) { c.close(); } }) };
+    };
+    const getFresh = async () => 'fresh_token_' + (++tokenSeq);
+    const renew = async () => 'renewed_token_' + (++tokenSeq);
+    const chatFetch = makeFetcher(stubFetch, getFresh, renew);
+    const resp = await chatFetch('API', { messages: [{ role: 'user', content: 'hi' }] }, undefined);
+    assert(resp && resp.status === 200, 'second fetch succeeded, got status=' + (resp && resp.status));
+    assert(fetchCalls.length === 2, 'exactly 2 fetch calls (initial + 1 retry), got ' + fetchCalls.length);
+    assert(fetchCalls[0].token === 'fresh_token_1', 'first call used the fresh token, got ' + fetchCalls[0].token);
+    assert(fetchCalls[1].token === 'renewed_token_2', 'retry used the FRESH/renewed token (not the spent one), got ' + fetchCalls[1].token);
+  });
+
+  await t('A3 both fetches reject -> error propagates (no infinite retry, no hang)', async () => {
+    const fetchCalls = [];
+    let tokenSeq = 0;
+    const getFresh = async () => 'fresh_token_' + (++tokenSeq);
+    const renew = async () => 'renewed_token_' + (++tokenSeq);
+    const stubFetch = async () => {
+      fetchCalls.push(1);
+      const e = new Error('network down'); e.name = 'NetworkError'; throw e;
+    };
+    const chatFetch = makeFetcher(stubFetch, getFresh, renew);
+    let threw = null;
+    try { await chatFetch('API', { messages: [] }, undefined); } catch (e) { threw = e; }
+    assert(threw && threw.name === 'NetworkError', 'error propagated after the single retry, got ' + (threw && threw.name));
+    assert(fetchCalls.length === 2, 'exactly 2 fetch attempts (initial + 1 retry, no infinite loop), got ' + fetchCalls.length);
+  });
+
+  await t('A3 abort (timeout) is NOT retried -> propagates immediately', async () => {
+    const fetchCalls = [];
+    const getFresh = async () => 'tok';
+    const stubFetch = async () => {
+      fetchCalls.push(1);
+      const e = new Error('aborted'); e.name = 'AbortError'; throw e;
+    };
+    const chatFetch = makeFetcher(stubFetch, getFresh, async () => 'tok2');
+    let threw = null;
+    try { await chatFetch('API', { messages: [] }, undefined); } catch (e) { threw = e; }
+    assert(threw && threw.name === 'AbortError', 'AbortError propagated, got ' + (threw && threw.name));
+    assert(fetchCalls.length === 1, 'timeout is NOT retried (only 1 fetch), got ' + fetchCalls.length);
   });
 }
 

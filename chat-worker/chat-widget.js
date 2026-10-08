@@ -126,6 +126,87 @@ function apoStripSourcesBlock(t) {
 }
 // APO_STRIP_SOURCES_END
 
+// Item 5d: render assistant text with TAPPABLE links — the contact section
+// (`/#contact` or `/contact`) and bare https(s) URLs on apposight.com — built
+// ONLY with createElement + textContent. We NEVER set innerHTML to raw model
+// text, so a prompt-injected <script>, onerror, or attribute is inert.
+// Absolute URLs are linkified ONLY for the apposight.com host (anything else
+// renders as plain text); the contact path links relative (stays on the site).
+function apoRenderLinks(container, text) {
+  if (!container) return;
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const doc = (typeof document !== 'undefined') ? document : null;
+  if (doc == null) { container.textContent = String(text == null ? '' : text); return; }
+  const t = String(text == null ? '' : text);
+  const RE = /(https?:\/\/[^\s<>"']+)|(\/#contact|\/contact)/g;
+  let last = 0, m;
+  const flush = (s) => { if (s) container.appendChild(doc.createTextNode(s)); };
+  while ((m = RE.exec(t)) !== null) {
+    flush(t.slice(last, m.index));
+    const token = m[0];
+    let href = null;
+    if (m[1]) { if (/apposight\.com/i.test(token)) href = token; }
+    else if (m[2]) { href = m[2]; }
+    if (href) {
+      const a = doc.createElement('a');
+      a.href = href;
+      a.textContent = token;
+      if (m[1]) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      container.appendChild(a);
+    } else {
+      container.appendChild(doc.createTextNode(token));
+    }
+    last = m.index + token.length;
+  }
+  flush(t.slice(last));
+}
+// APO_RENDER_LINKS_END
+
+// A3: retry the chat POST ONCE when the main fetch throws BEFORE any response
+// bytes arrive (pre-byte network error — e.g. a transient connection drop
+// before headers). We fetch a FRESH Turnstile token (single-use tokens are
+// consumed client-side on send, so a throw may have left the old one spent)
+// and retry once. A turnstile_expired 403 is ALSO retried once with a renewed
+// token. Abort (timeout) is NOT retried — we propagate it to the caller's
+// timeout notice.
+//
+// FACTORY: apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) returns
+// `(url, baseBody, signal) => Promise<Response>`. Injectable fetch + token
+// fns let the unit test stub a "first rejects, second succeeds" network.
+function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
+  const doFetch = (url, baseBody, signal, tok) => fetchImpl(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({}, baseBody, { cf_turnstile_response: tok })),
+    signal: signal || undefined,
+  });
+  const isAbort = (e) => e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+  return async function (url, baseBody, signal) {
+    let token = await getFreshToken();
+    let resp;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let err = null;
+      try { resp = await doFetch(url, baseBody, signal, token); }
+      catch (e) { err = e; }
+      if (err) {
+        // pre-byte network error
+        if (isAbort(err)) throw err;               // timeouts are not retried
+        if (attempt >= 1) throw err;              // only retry ONCE
+        token = (await (renewToken ? renewToken() : getFreshToken())) || token;
+        continue;
+      }
+      if (resp.status !== 403) return resp;
+      let code = null;
+      try { code = (await resp.clone().json()).error; } catch {}
+      if (code !== 'turnstile_expired') return resp;
+      if (attempt >= 1) return resp;              // only renew ONCE
+      token = (await (renewToken ? renewToken() : getFreshToken())) || token;
+    }
+    return resp;
+  };
+}
+// APO_FETCH_RETRY_END
+
 (function () {
   'use strict';
 
@@ -405,29 +486,15 @@ function apoStripSourcesBlock(t) {
     };
 
     try {
-      // item 3d: obtain a fresh single-use token and POST. If the server says
-      // the token was expired/duplicate (turnstile_expired — siteverify
-      // rejected with timeout-or-duplicate or invalid-input-response), renew
-      // the token and retry the SAME message ONCE, transparently. The
-      // composer stays disabled the whole time; the finally block below
-      // ALWAYS re-enables it (item 3e).
-      let token = await getTurnstileToken();
-      let resp;
-      for (let attempt = 0; ; attempt++) {
-        armOverall();
-        resp = await fetch(API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: state.messages, cf_turnstile_response: token }),
-          signal: ac.signal,
-        });
-        if (resp.status !== 403) break;
-        let code = null;
-        try { code = (await resp.clone().json()).error; } catch {}
-        if (code !== 'turnstile_expired' || attempt >= 1) break;
-        token = await renewTurnstileToken();
-        if (!token) break;
-      }
+      // item 3d: obtain a fresh single-use token and POST. apoFetchWithRetry
+      // handles BOTH retry cases transparently (the composer stays disabled
+      // the whole time; the finally block ALWAYS re-enables it, item 3e):
+      //   (a) pre-byte network throw  -> retry ONCE with a FRESH token (A3)
+      //   (b) 403 turnstile_expired   -> renew token, retry ONCE
+      // Abort (timeout) propagates straight to the timeout notice below.
+      armOverall();
+      const chatFetch = apoFetchWithRetry(fetch, getTurnstileToken, renewTurnstileToken);
+      const resp = await chatFetch(API, { messages: state.messages }, ac.signal);
 
       if (!resp.ok || !resp.body) {
         let msg = 'Please use our contact form.';
@@ -459,13 +526,13 @@ function apoStripSourcesBlock(t) {
             if (event === 'start') { /* keep typing until first delta */ }
             else if (event === 'delta') {
               fullText += (p.text || '');
-              botBox.textContent = fullText;
+              apoRenderLinks(botBox, fullText);
               $('.log').scrollTop = $('.log').scrollHeight;
             } else if (event === 'done') {
               if (p.sources) renderSources(p.sources);
               leadCapture = !!p.lead_capture;
             } else if (event === 'error') {
-              botBox.textContent = '';
+              apoRenderLinks(botBox, '');
               notice(p.message || 'Please use our contact form.', true);
             }
           }
@@ -482,7 +549,7 @@ function apoStripSourcesBlock(t) {
 
       if (!fullText.trim()) { typing.remove(); notice('No answer available. Please use our contact form.', true); return; }
       fullText = apoStripSourcesBlock(fullText);
-      botBox.textContent = fullText; // item 5: re-render the stripped text
+      apoRenderLinks(botBox, fullText); // item 5: re-render the stripped text with tappable links
       state.messages.push({ role: 'assistant', content: fullText });
       if (leadCapture) renderLeadForm();
     } catch (err) {

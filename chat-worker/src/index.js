@@ -42,6 +42,7 @@ import widgetText from './widget.js';
 // below are imported for INTERNAL use only; tests.js imports ./src/retrieval.js
 // directly to assert top-K URLs/scores without a model.
 import { retrieve, buildQuery, INDEX, isBuying } from './retrieval.js';
+import { stripInlineRefs, safePrefix } from './text.js';
 
 // Gemini API-key env var name, built from parts so the secret-name literal
 // never appears in the bundle (avoids secret-scrubbing of the source file).
@@ -139,16 +140,32 @@ function buildSystemPrompt(retr, { buyingOffer = false } = {}) {
     + 'qualitative description the site gives and state plainly that no '
     + 'exact figure is published. Do NOT answer with "I\'m not sure" alone '
     + 'and do NOT invent or extrapolate a number the page never states.',
+    '- STYLE: do NOT put inline citations, bracketed references, numbered'
+    + ' cites, or a "Sources:" list inside your answer. The chat UI already shows'
+    + ' source chips; your text should be clean prose only.',
+    '- MENTION THE CONTACT FORM (' + CONTACT_PATH + ') ONLY WHEN YOUR ANSWER IS'
+    + ' INCOMPLETE OR YOU DO NOT KNOW THE FACT. Do not append the contact form'
+    + ' to every answer or to a complete answer.',
     buyingOffer
       ? '- The visitor shows BUYING INTENT. After answering from the reference'
       + ' data (or explaining you cannot quote prices here), offer to collect'
       + ' their name, email, and a short description of their project so the'
       + ' AppoSight team can follow up. End your reply with the exact marker: [[LEAD_CAPTURE]]'
       : '',
-    '- When asked what AppoSight does, summarize our services in 3-4 short'
-    + ' lines drawn only from the home and about excerpts: (a) who is behind'
-    + ' it, (b) the flagship capabilities, (c) where to see them, (d) how to'
-    + ' reach us. No marketing adjectives.',
+    retr && retr.useCaseTitles && retr.useCaseTitles.length
+      ? '- USE-CASE LISTING: this question asks what AppoSight does / offers / '
+      + ' its services or use cases. LIST EVERY use case below by name, with a '
+      + ' one-line summary of each, plus a one-line overall summary. Do not '
+      + ' omit any use case from the list.'
+      + ' Use-case pages to enumerate: '
+      + retr.useCaseTitles.map((u) => u.title).join('; ')
+      : '',
+    '- When asked what AppoSight does, summarize in 3-4 short lines drawn ONLY '
+    + 'from the home and about excerpts provided: (a) the home page\'s '
+    + 'service areas (capabilities), (b) who is behind it ONLY if a name '
+    + 'appears in those excerpts, (c) where to see the work (use cases), '
+    + '(d) how to reach us. Do not name any person, company, or figure that '
+    + 'is not in the excerpts. No marketing adjectives.',
   ].filter(Boolean);
 
   const indexBlock = INDEX.map((p) =>
@@ -255,19 +272,33 @@ async function verifyTurnstile(token, env) {
   }
 }
 
+// Shared fire-and-forget KV write. Scheduled via ctx.waitUntil when a
+// controller is present (prod + `wrangler dev` / workerd) so the write is NOT
+// cancelled when the stream response finalizes — the root cause of the prod
+// t_/m_ loss (a bare un-awaited put is a fire-and-forget promise that CF
+// drops once the response is done). In unit tests `ctx` is undefined, so we
+// fall back to a direct put, keeping KV assertions deterministic. Never
+// throws: logging must never break chat.
+function kvPut(env, ctx, key, value, opts) {
+  try {
+    if (!env || !env.KV_LOG) return;
+    const p = env.KV_LOG.put(key, value, opts);
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      try { ctx.waitUntil(p); } catch { /* waitUntil reject — already guarded by put above */ }
+    }
+  } catch { /* logging must never break chat */ }
+}
+
 // Operator log for Turnstile verifications that FAILED. Records ONLY the
 // siteverify error code (timeout-or-duplicate, invalid-input-response, …) +
 // a timestamp — NEVER the token. m_ prefix, 30-day TTL, fire-and-forget.
-function logTurnstileFailure(errorCode, env) {
-  try {
-    if (!env.KV_LOG) return;
-    const key = 'm_turnstile_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    env.KV_LOG.put(key, JSON.stringify({
-      ts: new Date().toISOString(),
-      kind: 'turnstile',
-      error_code: String(errorCode || 'unknown'),
-    }), { expirationTtl: QUESTION_LOG_TTL });
-  } catch { /* logging must never break chat */ }
+function logTurnstileFailure(errorCode, env, ctx) {
+  const key = 'm_turnstile_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  kvPut(env, ctx, key, JSON.stringify({
+    ts: new Date().toISOString(),
+    kind: 'turnstile',
+    error_code: String(errorCode || 'unknown'),
+  }), { expirationTtl: QUESTION_LOG_TTL });
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +411,7 @@ function sseResponse({ events, originHost, extraHeaders = {} }) {
 // ---------------------------------------------------------------------------
 // POST /api/chat — main endpoint (SSE)
 // ---------------------------------------------------------------------------
-async function handleChat(request, env) {
+async function handleChat(request, env, ctx) {
   const origin = request.headers.get('origin') || request.headers.get('referer') || '';
   const originHost = (() => { try { return new URL(origin).origin; } catch { return origin; } })();
 
@@ -440,7 +471,7 @@ async function handleChat(request, env) {
   //   turnstile_failed  -> everything else (bad token, site mismatch, …).
   const tv = await verifyTurnstile(body && body.cf_turnstile_response, env);
   if (!tv.ok) {
-    logTurnstileFailure(tv.error_code, env);
+    logTurnstileFailure(tv.error_code, env, ctx);
     const expired = tv.error_code === 'timeout-or-duplicate' || tv.error_code === 'invalid-input-response';
     return json(
       { error: expired ? 'turnstile_expired' : 'turnstile_failed', hint: expired ? 'token_renew' : null },
@@ -474,7 +505,7 @@ async function handleChat(request, env) {
 
   // --- Canned no-match (NOT buying, NOT social): no model call, no KB passed. ---
   if (retr.mode === 'canned') {
-    logQuestion(query, env);
+    logQuestion(query, env, ctx);
     return sseResponse({
       originHost,
       events: [
@@ -503,7 +534,7 @@ async function handleChat(request, env) {
   }
 
   // --- Log the question (no IP, no email) with 30-day TTL ---
-  logQuestion(query, env); // fire-and-forget
+  logQuestion(query, env, ctx); // fire-and-forget
 
   // --- Call the model (streaming) ---
   // Timing anchors for the per-request t_ log (item 7). requestStart = now;
@@ -530,8 +561,8 @@ async function handleChat(request, env) {
       // Model retired/absent (e.g. Gemini deprecated the configured model).
       // Log ONLY the status code to KV (no upstream body) so operators can
       // alert on it, then answer with the friendly contact-form pointer.
-      logModelIssue('model_404', up, env);
-      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'model_404', error_code: 404 }, env);
+      logModelIssue('model_404', up, env, ctx);
+      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'model_404', error_code: 404 }, env, ctx);
       return json(
         { error: 'model_unavailable', message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', contact: CONTACT_PATH },
         503, corsHeaders(originHost)
@@ -541,8 +572,8 @@ async function handleChat(request, env) {
     // Distinct from a hard HTTP error — record it under a stable `timeout`
     // outcome so operators can alert on the stall (the 10+ minute symptom).
     if (e && (e.name === 'TimeoutError' || e.name === 'AbortError' || /abort|timeout/i.test(String(e && e.message || '')))) {
-      logModelIssue('model_ttfb_timeout', 0, env);
-      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'timeout', error_code: null }, env);
+      logModelIssue('model_ttfb_timeout', 0, env, ctx);
+      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'timeout', error_code: null }, env, ctx);
       return json(
         { error: 'timeout', message: 'That took too long. Please try again or use the contact form.', contact: CONTACT_PATH },
         504, corsHeaders(originHost)
@@ -550,8 +581,8 @@ async function handleChat(request, env) {
     }
     // Any other upstream error (429 quota, 5xx, network) — same friendly
     // pointer; log the status code so operators can alert on quota burn.
-    if (up) logModelIssue('model_error_' + up, up, env);
-    logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'error', error_code: up || null }, env);
+    if (up) logModelIssue('model_error_' + up, up, env, ctx);
+    logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'error', error_code: up || null }, env, ctx);
     return json(
       { error: 'model_unavailable', message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', contact: CONTACT_PATH },
       502, corsHeaders(originHost)
@@ -569,6 +600,11 @@ async function handleChat(request, env) {
   let leadCapture = false;
   let buffer = '';
   let finishReason = null;
+  // Item 5c: accumulated raw answer + how much of its stripped form has been
+  // enqueued, so inline citations can be removed once complete and a trailing
+  // partial citation (an unclosed '[') is never leaked mid-stream.
+  let accFull = '';
+  let sentLen = 0;
 
   const IDLE_READ_TIMEOUT_MS = parseInt(env.IDLE_READ_TIMEOUT_MS || '15000', 10);
   const OVERALL_CAP_MS = parseInt(env.OVERALL_CAP_MS || '45000', 10);
@@ -590,7 +626,7 @@ async function handleChat(request, env) {
         try { controller.close(); } catch { /* ignore */ }
       };
       const logOutcome = (outcome, error_code) =>
-        logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code }, env);
+        logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code }, env, ctx);
 
       const sendTimeoutError = () => {
         send('error', JSON.stringify({
@@ -640,9 +676,19 @@ async function handleChat(request, env) {
                 : '';
             } catch { /* non-JSON event, ignore */ }
             if (chunk) {
-              const visible = chunk.includes('[[LEAD_CAPTURE]]') ? chunk.replace('[[LEAD_CAPTURE]]', '') : chunk;
               if (chunk.includes('[[LEAD_CAPTURE]]')) leadCapture = true;
-              if (visible) send('delta', JSON.stringify({ text: visible }));
+              const clean = chunk.replace('[[LEAD_CAPTURE]]', '');
+              accFull += clean;
+              // Item 5c: strip inline citation artifacts from the ACCUMULATED
+              // answer (a citation spanning deltas is removed once complete)
+              // and hold back a trailing partial citation (unclosed '[') so a
+              // fragment like "[1" is never leaked before its "]". Emit only the
+              // newly-stripped tail beyond what we already sent.
+              const safe = safePrefix(stripInlineRefs(accFull));
+              if (safe.length > sentLen) {
+                send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
+                sentLen = safe.length;
+              }
             }
           }
         }
@@ -665,9 +711,14 @@ async function handleChat(request, env) {
                   : '';
               } catch { /* ignore */ }
               if (chunk) {
-                const visible = chunk.includes('[[LEAD_CAPTURE]]') ? chunk.replace('[[LEAD_CAPTURE]]', '') : chunk;
                 if (chunk.includes('[[LEAD_CAPTURE]]')) leadCapture = true;
-                if (visible) send('delta', JSON.stringify({ text: visible }));
+                const clean = chunk.replace('[[LEAD_CAPTURE]]', '');
+                accFull += clean;
+                const safe = safePrefix(stripInlineRefs(accFull));
+                if (safe.length > sentLen) {
+                  send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
+                  sentLen = safe.length;
+                }
               }
             }
           }
@@ -688,7 +739,7 @@ async function handleChat(request, env) {
         if (isTimeout) {
           sendTimeoutError();
           closeOut(reader);
-          logModelIssue('model_stream_timeout', 0, env);
+          logModelIssue('model_stream_timeout', 0, env, ctx);
           logOutcome('timeout', null);
         } else {
           send('error', JSON.stringify({
@@ -714,29 +765,23 @@ async function handleChat(request, env) {
 }
 
 // Fire-and-forget question log (never blocks the stream, never throws).
-function logQuestion(question, env) {
-  try {
-    if (!env.KV_LOG) return;
-    const key = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    env.KV_LOG.put(key, JSON.stringify({
-      ts: new Date().toISOString(),
-      question: String(question).slice(0, 2000),
-    }), { expirationTtl: QUESTION_LOG_TTL });
-  } catch { /* logging must never break chat */ }
+function logQuestion(question, env, ctx) {
+  const key = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  kvPut(env, ctx, key, JSON.stringify({
+    ts: new Date().toISOString(),
+    question: String(question).slice(0, 2000),
+  }), { expirationTtl: QUESTION_LOG_TTL });
 }
 
 // Operator alerting log for upstream model problems. Records ONLY the kind +
 // status code (never the upstream body) so it is safe to inspect at any time.
-function logModelIssue(kind, status, env) {
-  try {
-    if (!env.KV_LOG) return;
-    const key = 'm_' + kind + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    env.KV_LOG.put(key, JSON.stringify({
-      ts: new Date().toISOString(),
-      kind,
-      status: Number(status),
-    }), { expirationTtl: QUESTION_LOG_TTL });
-  } catch { /* logging must never break chat */ }
+function logModelIssue(kind, status, env, ctx) {
+  const key = 'm_' + kind + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  kvPut(env, ctx, key, JSON.stringify({
+    ts: new Date().toISOString(),
+    kind,
+    status: Number(status),
+  }), { expirationTtl: QUESTION_LOG_TTL });
 }
 
 // Wall-clock delta in ms from an earlier `now` anchor (performance.now or
@@ -750,26 +795,23 @@ function elapsedMs(startAnchor) {
 // Deliberately contains NO question text, NO IP, NO email — only latencies,
 // the Gemini finish reason, the outcome (ok/timeout/error), and an error code.
 // Fire-and-forget: never throws, never blocks the stream.
-function logTiming(rec, env) {
-  try {
-    if (!env.KV_LOG) return;
-    const key = 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    env.KV_LOG.put(key, JSON.stringify({
-      ts: new Date().toISOString(),
-      ttfb_ms: rec.ttfb_ms,
-      total_ms: rec.total_ms,
-      finish_reason: rec.finish_reason,
-      outcome: rec.outcome,
-      error_code: rec.error_code,
-    }), { expirationTtl: TIMING_LOG_TTL });
-  } catch { /* timing log must never break chat */ }
+function logTiming(rec, env, ctx) {
+  const key = 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  kvPut(env, ctx, key, JSON.stringify({
+    ts: new Date().toISOString(),
+    ttfb_ms: rec.ttfb_ms,
+    total_ms: rec.total_ms,
+    finish_reason: rec.finish_reason,
+    outcome: rec.outcome,
+    error_code: rec.error_code,
+  }), { expirationTtl: TIMING_LOG_TTL });
 }
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -809,7 +851,7 @@ export default {
     }
 
     if (path === '/api/chat' ) {
-      return handleChat(request, env);
+      return handleChat(request, env, ctx);
     }
 
     // DEV-ONLY test harness: served ONLY when DEV_ORIGIN is set (injected by
