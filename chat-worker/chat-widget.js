@@ -468,69 +468,67 @@ function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
     let leadCapture = false;
     let botBox = typing.querySelector('.bubble-b');
 
-    // item 2: client-side timeouts
-    //   OVERALL  = 60s (AbortController on the fetch — covers headers + body)
-    //   IDLE     = 25s (watchdog: if reader.read() hasn't resolved in this
-    //              window we abort and show the friendly timeout notice)
+    // item 7: client-side timeouts (single AbortController)
+    //   OVERALL  = 60s (covers headers + body)
+    //   IDLE     = 25s (per reader.read() — a stalled stream aborts here)
+    // item 7 (stall classification by first-byte):
+    //   NO bytes + timeout   -> retry ONCE with a FRESH Turnstile token, then
+    //                           the contact-form message (server never started).
+    //   BYTES then stall     -> "The response stalled. Please try again."
+    //   (the composer is re-enabled in the finally block on every path)
     const OVERALL_MS = 60000;
     const IDLE_MS = 25000;
     const TIMEOUT_NOTICE = 'That took too long. Please try again or use the contact form.';
+    const STALL_NOTICE = 'The response stalled. Please try again.';
+    const NETWORK_NOTICE = 'Network error. Please use our contact form.';
+    const CONTACT_NOTICE = 'Please use our contact form.';
+
+    // item 7: stall classification — the abort (overall/idle timer) cancels
+    // the reader; classify by whether any bytes ever arrived (shared.gotBytes).
+    let aborted = false;
     const ac = new AbortController();
-    let overallTimer = null;
+    const overallTimer = setTimeout(() => { aborted = true; ac.abort(); }, OVERALL_MS);
     let idleTimer = null;
-    const armOverall = () => {
-      if (overallTimer) clearTimeout(overallTimer);
-      overallTimer = setTimeout(() => ac.abort(), OVERALL_MS);
-    };
     const armIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => ac.abort(), IDLE_MS);
+      idleTimer = setTimeout(() => { aborted = true; ac.abort(); }, IDLE_MS);
     };
     const disarm = () => {
-      if (overallTimer) { clearTimeout(overallTimer); overallTimer = null; }
+      clearTimeout(overallTimer);
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     };
+    const isAbort = (e) => e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+    const abortError = () => { const e = new Error('aborted'); e.name = 'AbortError'; return e; };
 
-    try {
-      // item 3d: obtain a fresh single-use token and POST. apoFetchWithRetry
-      // handles BOTH retry cases transparently (the composer stays disabled
-      // the whole time; the finally block ALWAYS re-enables it, item 3e):
-      //   (a) pre-byte network throw  -> retry ONCE with a FRESH token (A3)
-      //   (b) 403 turnstile_expired   -> renew token, retry ONCE
-      // Abort (timeout) propagates straight to the timeout notice below.
-      armOverall();
-      const chatFetch = apoFetchWithRetry(fetch, getTurnstileToken, renewTurnstileToken);
-      const resp = await chatFetch(API, { messages: sendMsgs }, ac.signal);
+    // Shared context across consumeStream / finishAnswer / abort handler.
+    const shared = { gotBytes: false };
 
-      if (!resp.ok || !resp.body) {
-        // Translate server error codes to friendly text (item 3: never show a
-        // raw error code like "message_too_long" to the end user).
-        const FRIENDLY = {
-          message_too_long: 'That message is a bit too long. Please shorten it or try again.',
-          invalid_role: 'Something went wrong with your message. Please try again.',
-          too_many_turns: 'This conversation got long. Start a new chat to continue.',
-          payload_too_large: 'That message is a bit too long. Please shorten it or try again.',
-        };
-        let msg = 'Please use our contact form.';
-        try {
-          const j = await resp.json();
-          const code = j.error;
-          if (code && FRIENDLY[code]) msg = FRIENDLY[code];
-          else if (typeof j.message === 'string' && j.message) msg = j.message;
-        } catch {}
-        typing.remove();
-        notice(msg, true);
-        return; // the finally block re-enables the composer + send button
-      }
-
+    // Read-and-parse the SSE stream until it closes (or the controller
+    // aborts). Accumulates fullText, sets shared.gotBytes on the first
+    // reader.read() chunk. A stall (overall/idle timer) or a network error
+    // propagates to the caller, which classifies via shared.gotBytes.
+    const consumeStream = async (resp) => {
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
+      let gotDone = false;
+      let gotError = false;
+      let errMsg = CONTACT_NOTICE;
       try {
         while (true) {
           armIdle();
-          const { done, value } = await reader.read();
+          if (aborted) throw abortError();
+          let readRes;
+          try {
+            readRes = await reader.read();
+          } catch (err) {
+            if (aborted) throw abortError();
+            throw err; // genuine network error
+          }
+          if (aborted) throw abortError();
+          const { done, value } = readRes;
           if (done) break;
+          shared.gotBytes = true;
           buf += dec.decode(value, { stream: true });
           let idx;
           while ((idx = buf.indexOf('\n\n')) !== -1) {
@@ -550,35 +548,138 @@ function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
             } else if (event === 'done') {
               if (p.sources) renderSources(p.sources);
               leadCapture = !!p.lead_capture;
+              gotDone = true;
             } else if (event === 'error') {
-              apoRenderLinks(botBox, '');
-              notice(p.message || 'Please use our contact form.', true);
+              errMsg = (typeof p.message === 'string' && p.message) ? p.message : CONTACT_NOTICE;
+              gotError = true;
             }
           }
         }
-      } catch (err) {
-        // AbortError => we hit the 60s overall or 25s idle cap. Anything else
-        // (mid-stream network drop) is treated the same way: fail fast, show
-        // the friendly notice, and guarantee the composer is re-enabled.
-        const isAbort = err && (err.name === 'AbortError' || err.name === 'TimeoutError');
-        typing.remove();
-        notice(isAbort ? TIMEOUT_NOTICE : 'Network error. Please use our contact form.', true);
-        return;
+      } finally {
+        try { reader.releaseLock && reader.releaseLock(); } catch {}
       }
+      return { gotDone, gotError, errMsg };
+    };
 
-      if (!fullText.trim()) { typing.remove(); notice('No answer available. Please use our contact form.', true); return; }
+    // Render the accumulated answer. Returns true if an answer was rendered.
+    const finishAnswer = () => {
+      if (!fullText.trim()) {
+        typing.remove();
+        notice('No answer available. Please use our contact form.', true);
+        return false;
+      }
       fullText = apoStripSourcesBlock(fullText);
-      apoRenderLinks(botBox, fullText); // item 5: re-render the stripped text with tappable links
-      // Store assistant history truncated (untrusted data; keep the start) so
-      // the widget's own rolling history never carries a full long answer.
+      apoRenderLinks(botBox, fullText); // item 5: re-render with tappable links
       state.messages.push({ role: 'assistant', content: fullText.slice(0, 700) });
       state.messages = state.messages.slice(-8);
       if (leadCapture) renderLeadForm();
-    } catch (err) {
-      // fetch-level abort (60s cap fired before headers) or any other throw.
-      const isAbort = err && (err.name === 'AbortError' || err.name === 'TimeoutError');
-      typing.remove();
-      notice(isAbort ? TIMEOUT_NOTICE : 'Network error. Please use our contact form.', true);
+      return true;
+    };
+
+    // Issue the chat POST ONCE with a fresh token (the item-7 retry path).
+    // Does NOT go through apoFetchWithRetry — the A3/403-renew semantics are
+    // already handled by the FIRST call; this is the one item-7 retry.
+    const issueOnce = async (tok) => {
+      const localAc = new AbortController();
+      const localT = setTimeout(() => localAc.abort(), OVERALL_MS);
+      try {
+        return await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({}, { messages: sendMsgs }, { cf_turnstile_response: tok })),
+          signal: localAc.signal,
+        });
+      } finally { clearTimeout(localT); }
+    };
+
+    try {
+      // item 3d: obtain a fresh single-use token and POST. apoFetchWithRetry
+      // handles BOTH pre-byte retry cases transparently (the composer stays
+      // disabled the whole time; the finally block ALWAYS re-enables it):
+      //   (a) pre-byte network throw  -> retry ONCE with a FRESH token (A3)
+      //   (b) 403 turnstile_expired   -> renew token, retry ONCE
+      // Abort (timeout) propagates straight to the timeout notice below.
+      const chatFetch = apoFetchWithRetry(fetch, getTurnstileToken, renewTurnstileToken);
+      let resp;
+      try {
+        resp = await chatFetch(API, { messages: sendMsgs }, ac.signal);
+      } catch (err) {
+        typing.remove();
+        notice(isAbort(err) ? TIMEOUT_NOTICE : NETWORK_NOTICE, true);
+        return; // finally re-enables the composer + send button
+      }
+
+      if (!resp.ok || !resp.body) {
+        // Translate server error codes to friendly text (item 3: never show a
+        // raw error code like "message_too_long" to the end user).
+        const FRIENDLY = {
+          message_too_long: 'That message is a bit too long. Please shorten it or try again.',
+          invalid_role: 'Something went wrong with your message. Please try again.',
+          too_many_turns: 'This conversation got long. Start a new chat to continue.',
+          payload_too_large: 'That message is a bit too long. Please shorten it or try again.',
+        };
+        let msg = CONTACT_NOTICE;
+        try {
+          const j = await resp.json();
+          const code = j.error;
+          if (code && FRIENDLY[code]) msg = FRIENDLY[code];
+          else if (typeof j.message === 'string' && j.message) msg = j.message;
+        } catch {}
+        typing.remove();
+        notice(msg, true);
+        return;
+      }
+
+      try {
+        const result = await consumeStream(resp);
+        if (result.gotError) {
+          apoRenderLinks(botBox, '');
+          typing.remove();
+          notice(result.errMsg, true);
+          return;
+        }
+        if (!result.gotDone) {
+          typing.remove();
+          notice('No answer available. Please use our contact form.', true);
+          return;
+        }
+        finishAnswer();
+        return;
+      } catch (err) {
+        if (isAbort(err)) {
+          // item 7: classify by the first-byte flag (shared.gotBytes).
+          if (!shared.gotBytes) {
+            // NO bytes + timeout -> retry ONCE with a FRESH Turnstile token.
+            try {
+              const freshToken = await (renewTurnstileToken ? renewTurnstileToken() : getTurnstileToken()) || (await getTurnstileToken());
+              const resp2 = await issueOnce(freshToken);
+              if (resp2.ok && resp2.body) {
+                const result2 = await consumeStream(resp2);
+                if (result2.gotError) {
+                  typing.remove();
+                  notice(result2.errMsg, true);
+                  return;
+                }
+                if (result2.gotDone) {
+                  if (finishAnswer()) return;
+                }
+              }
+            } catch (retryErr) { /* fall through to the contact-form notice */ }
+            typing.remove();
+            notice(TIMEOUT_NOTICE, true);
+          } else {
+            // BYTES then stall -> the server started working but the stream
+            // stopped. Show the "stalled" notice.
+            typing.remove();
+            notice(STALL_NOTICE, true);
+          }
+          return;
+        }
+        // Genuine mid-stream network drop (not our abort): fail fast.
+        typing.remove();
+        notice(NETWORK_NOTICE, true);
+        return;
+      }
     } finally {
       // item 2: ALWAYS re-enable the composer, no matter how we got here.
       disarm();

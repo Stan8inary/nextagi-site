@@ -313,29 +313,46 @@ async function kvGetCached(env, ns, key) {
 
 // Read-only log helper. Writes a `t_` outcome key to KV_LOG with an intent field.
 // Never logs briefing text. Never logs secrets.
-function logOutcome(env, intent, outcome) {
-  if (!env || !env.KV_LOG) return;
+// Item 2: shared fire-and-forget helper (same semantics as index.js kvPut) with
+// a UNIQUE timestamped+random key (the old fixed key `t_briefing_<intent>_<outcome>`
+// was overwritten on every call — only the last outcome per intent survived).
+// A failed put is OBSERVABLE via console.error (root cause of the prod t_/m_
+// loss was a rejected put handed to waitUntil with no .catch). Never awaits in
+// the request path.
+function kvLogPut(env, ctx, key, value, opts) {
   try {
-    const payload = JSON.stringify({
-      t: new Date().toISOString(),
-      intent,
-      outcome,
-    });
-    env.KV_LOG.put(`t_briefing_${intent}_${outcome}`, payload, { expirationTtl: 7 * 24 * 3600 });
-  } catch (e) {
-    // fire-and-forget
-  }
+    if (!env || !env.KV_LOG) return;
+    const prefix = String(key).split('_')[0] || 'kv';
+    const p = env.KV_LOG.put(key, value, opts);
+    if (p && typeof p.catch === 'function') {
+      p.catch((e) => {
+        try { console.error('[chat] KV put failed', prefix, (e && e.message) || String(e)); } catch { /* swallow */ }
+      });
+    }
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      try { ctx.waitUntil(p); } catch { /* already guarded */ }
+    }
+  } catch { /* logging must never break chat */ }
+}
+
+function logOutcome(env, intent, outcome, ctx) {
+  const key = 't_briefing_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + intent + '_' + outcome;
+  kvLogPut(env, ctx, key, JSON.stringify({
+    t: new Date().toISOString(),
+    intent,
+    outcome,
+  }), { expirationTtl: 7 * 24 * 3600 });
 }
 
 // ---------------------------------------------------------------------------
 // Entry resolution
 // ---------------------------------------------------------------------------
 
-async function resolveBriefing(env, userText, now) {
+async function resolveBriefing(env, userText, now, ctx) {
   const det = detectIntent(userText);
   if (!det.intent) return { intent: null };
   if (!env || !env.BRIEFINGS) {
-    logOutcome(env, det.intent, 'no-binding');
+    logOutcome(env, det.intent, 'no-binding', ctx);
     return { intent: det.intent, ok: false, reason: 'no-binding' };
   }
 
@@ -347,7 +364,7 @@ async function resolveBriefing(env, userText, now) {
         kvGetCached(env, 'weekly_analysis_index', 'weekly_analysis_index'),
       ]);
       if (!dailyIdx && !waIdx) {
-        logOutcome(env, 'catalog', 'empty');
+        logOutcome(env, 'catalog', 'empty', ctx);
         return { intent: 'catalog', ok: false, reason: 'empty' };
       }
       const dailyDates = (dailyIdx || []).map(e => e.date);
@@ -358,47 +375,47 @@ async function resolveBriefing(env, userText, now) {
         daily_latest10: dailyDates.slice(0, 10),
         wa_latest10: waDates.slice(0, 10),
       };
-      logOutcome(env, 'catalog', 'ok');
+      logOutcome(env, 'catalog', 'ok', ctx);
       return { intent: 'catalog', ok: true, entry };
     }
 
     if (det.intent === 'daily_latest') {
       const idx = await kvGetCached(env, 'briefings_index', 'briefings_index');
       if (!idx || !Array.isArray(idx) || idx.length === 0) {
-        logOutcome(env, 'daily_latest', 'no-index');
+        logOutcome(env, 'daily_latest', 'no-index', ctx);
         return { intent: 'daily_latest', ok: false, reason: 'no-index' };
       }
       const date = idx[0] && idx[0].date;
       if (!date) {
-        logOutcome(env, 'daily_latest', 'bad-index');
+        logOutcome(env, 'daily_latest', 'bad-index', ctx);
         return { intent: 'daily_latest', ok: false, reason: 'bad-index' };
       }
       const entry = await kvGetCached(env, 'briefings_entry', date);
       if (!entry) {
-        logOutcome(env, 'daily_latest', 'missing');
+        logOutcome(env, 'daily_latest', 'missing', ctx);
         return { intent: 'daily_latest', ok: false, reason: 'missing' };
       }
-      logOutcome(env, 'daily_latest', 'ok');
+      logOutcome(env, 'daily_latest', 'ok', ctx);
       return { intent: 'daily_latest', ok: true, entry, date };
     }
 
     if (det.intent === 'wa_latest') {
       const idx = await kvGetCached(env, 'wa_index', 'weekly_analysis_index');
       if (!idx || !Array.isArray(idx) || idx.length === 0) {
-        logOutcome(env, 'wa_latest', 'no-index');
+        logOutcome(env, 'wa_latest', 'no-index', ctx);
         return { intent: 'wa_latest', ok: false, reason: 'no-index' };
       }
       const date = idx[0] && idx[0].date;
       if (!date) {
-        logOutcome(env, 'wa_latest', 'bad-index');
+        logOutcome(env, 'wa_latest', 'bad-index', ctx);
         return { intent: 'wa_latest', ok: false, reason: 'bad-index' };
       }
       const entry = await kvGetCached(env, 'wa_entry', `wa_${date}`);
       if (!entry) {
-        logOutcome(env, 'wa_latest', 'missing');
+        logOutcome(env, 'wa_latest', 'missing', ctx);
         return { intent: 'wa_latest', ok: false, reason: 'missing' };
       }
-      logOutcome(env, 'wa_latest', 'ok');
+      logOutcome(env, 'wa_latest', 'ok', ctx);
       return { intent: 'wa_latest', ok: true, entry, date };
     }
 
@@ -406,10 +423,10 @@ async function resolveBriefing(env, userText, now) {
       const entry = await kvGetCached(env, 'briefings_entry', det.date);
       if (!entry) {
         const nf = await catalogContext(env);
-        logOutcome(env, 'daily_dated', 'not-found');
+        logOutcome(env, 'daily_dated', 'not-found', ctx);
         return { intent: 'daily_dated', ok: true, entry: nf, date: det.date, notFound: true };
       }
-      logOutcome(env, 'daily_dated', 'ok');
+      logOutcome(env, 'daily_dated', 'ok', ctx);
       return { intent: 'daily_dated', ok: true, entry, date: det.date };
     }
 
@@ -417,19 +434,19 @@ async function resolveBriefing(env, userText, now) {
       const entry = await kvGetCached(env, 'wa_entry', `wa_${det.date}`);
       if (!entry) {
         const nf = await catalogContext(env);
-        logOutcome(env, 'wa_dated', 'not-found');
+        logOutcome(env, 'wa_dated', 'not-found', ctx);
         return { intent: 'wa_dated', ok: true, entry: nf, date: det.date, notFound: true };
       }
-      logOutcome(env, 'wa_dated', 'ok');
+      logOutcome(env, 'wa_dated', 'ok', ctx);
       return { intent: 'wa_dated', ok: true, entry, date: det.date };
     }
 
-    logOutcome(env, det.intent, 'unknown');
+    logOutcome(env, det.intent, 'unknown', ctx);
     return { intent: det.intent, ok: false, reason: 'unknown' };
 
   } catch (e) {
     const reason = (e && e.message === 'timeout') ? 'timeout' : (e && e.message) || 'error';
-    logOutcome(env, det.intent, reason);
+    logOutcome(env, det.intent, reason, ctx);
     return { intent: det.intent, ok: false, reason };
   }
 }

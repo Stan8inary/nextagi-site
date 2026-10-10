@@ -84,6 +84,24 @@ const QUESTION_LOG_TTL = 30 * 86400; // 30 days
 const TIMING_LOG_TTL = 7 * 86400;   // 7 days (per-request timing, no question text)
 const SITE = 'https://www.apposight.com';
 const CONTACT_PATH = '/#contact';
+// Limiter Durable Object call cap (item 4): a hung DO call must not block the
+// request — 3000 ms then fail closed (503 chat_unavailable). Overridable for
+// tests so the timeout path can be exercised fast.
+const LIMETER_TIMEOUT_MS = parseInt((typeof process !== 'undefined' && process.env && process.env.LIMETER_TIMEOUT_MS) || '3000', 10);
+
+// Race a promise against a deadline. On timeout it REJECTS (the caller's
+// catch handles it — for the limiter calls that is the fail-closed 503 path).
+// The timer is cleared on settle so we don't hold a handle for 3s after a fast
+// resolution. Never throws from the helper itself.
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error((label || 'op') + '_timeout')), ms);
+    Promise.resolve(promise).then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -259,14 +277,18 @@ async function callModel({ model, apiKey, systemPrompt, messages, timeoutMs = 20
 // "invalid-input-response", "success") or a transport-level code
 // ("no-token", "no-secret", "http-<status>", "parse-error", "network-error").
 // The token itself is NEVER logged — only the siteverify error code.
+const SITEVERIFY_TIMEOUT_MS = parseInt((typeof process !== 'undefined' && process.env && process.env.SITEVERIFY_TIMEOUT_MS) || '5000', 10);
 async function verifyTurnstile(token, env) {
   if (!token) return { ok: false, error_code: 'no-token' };
   if (!env.TURNSTILE_SECRET) return { ok: false, error_code: 'no-secret' };
   try {
+    const signal = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
+      ? AbortSignal.timeout(SITEVERIFY_TIMEOUT_MS) : undefined;
     const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token }),
+      ...(signal ? { signal } : {}),
     });
     if (!r.ok) return { ok: false, error_code: 'http-' + r.status };
     const data = await r.json();
@@ -287,7 +309,18 @@ async function verifyTurnstile(token, env) {
 function kvPut(env, ctx, key, value, opts) {
   try {
     if (!env || !env.KV_LOG) return;
+    const prefix = String(key).split('_')[0] || 'kv';
     const p = env.KV_LOG.put(key, value, opts);
+    // Item 2: a failed put must be OBSERVABLE. Attach a .catch BEFORE handing
+    // it to waitUntil (a rejected promise handed to waitUntil would otherwise
+    // be silently dropped by the runtime — the exact root cause of the prod
+    // t_/m_ loss). We do NOT await in the request path (item 2: keep it
+    // fire-and-forget for latency); we only need to SEE the failure.
+    if (p && typeof p.catch === 'function') {
+      p.catch((e) => {
+        try { console.error('[chat] KV put failed', prefix, (e && e.message) || String(e)); } catch { /* swallow */ }
+      });
+    }
     if (ctx && typeof ctx.waitUntil === 'function') {
       try { ctx.waitUntil(p); } catch { /* waitUntil reject — already guarded by put above */ }
     }
@@ -420,6 +453,21 @@ async function handleChat(request, env, ctx) {
   const origin = request.headers.get('origin') || request.headers.get('referer') || '';
   const originHost = (() => { try { return new URL(origin).origin; } catch { return origin; } })();
 
+  // Item 1: request-scoped stage logger. ONE random 6-char id per request,
+  // shared across the handleChat body AND the stream's start() (closure).
+  // NEVER logs question text, tokens, or IPs — only a stage name, elapsed ms,
+  // and the id (console.error adds error name/message, never the body).
+  const STAGE_ID = Math.random().toString(36).slice(2, 8);
+  const REQUEST_START = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const stage = (name) => {
+    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - REQUEST_START);
+    console.log('[chat] stage=' + name + ' ms=' + ms + ' id=' + STAGE_ID);
+  };
+  const stageErr = (name, e) => {
+    console.error('[chat] stage=' + name + ' failed', (e && e.name) || 'Error', (e && e.message) || String(e), 'id=' + STAGE_ID);
+  };
+  stage('request_received');
+
   if (request.headers.get('origin') && !isAllowedOrigin(request.headers.get('origin'), env)) {
     return json({ error: 'forbidden_origin' }, 403, corsHeaders());
   }
@@ -431,7 +479,8 @@ async function handleChat(request, env, ctx) {
   let rawText;
   try {
     rawText = await request.text();
-  } catch {
+  } catch (e) {
+    stageErr('request_text', e);
     return json({ error: 'invalid_json' }, 400);
   }
   // Hard byte cap on the RAW request body (item 2, distinct error). Applied
@@ -493,6 +542,7 @@ async function handleChat(request, env, ctx) {
     return json({ error: 'too_many_turns', max: MAX_TURNS }, 400);
   }
   messages = trimmed; // downstream (buildQuery, latestUser, model call) sees the trimmed history
+  stage('body_ok');
 
 
   // --- Per-IP throttle FIRST (cheap, atomic, stops floods; before Turnstile) ---
@@ -511,8 +561,9 @@ async function handleChat(request, env, ctx) {
   }
   let ipd;
   try {
-    ipd = await limiter.allowIp(ip, PER_IP_PER_MINUTE);
+    ipd = await withTimeout(limiter.allowIp(ip, PER_IP_PER_MINUTE), LIMETER_TIMEOUT_MS, 'allowIp');
   } catch (e) {
+    stageErr('limiter_allowIp', e);
     if (env && env.DEV_ORIGIN) return json({ error: 'limiter_error' }, 503, corsHeaders(originHost));
     return json(
       { error: 'chat_unavailable', message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', contact: CONTACT_PATH },
@@ -520,6 +571,7 @@ async function handleChat(request, env, ctx) {
     );
   }
   if (!ipd.allowed) return json({ error: 'rate_limited' }, 429, corsHeaders(originHost));
+  stage('limiter_ok');
 
   // --- Turnstile (every request; single-use tokens) ---
   // Distinct codes:
@@ -536,12 +588,14 @@ async function handleChat(request, env, ctx) {
       403, corsHeaders(originHost)
     );
   }
+  stage('turnstile_ok');
 
   // --- Daily GLOBAL cap — only charged for verified requests ---
   let d;
   try {
-    d = await limiter.allowDaily(Number(env.DAILY_CAP) || DAILY_CAP);
+    d = await withTimeout(limiter.allowDaily(Number(env.DAILY_CAP) || DAILY_CAP), LIMETER_TIMEOUT_MS, 'allowDaily');
   } catch (e) {
+    stageErr('limiter_allowDaily', e);
     // DO call failed mid-request. In prod, fail closed; in dev the handle's
     // own fallback already returned, so this only surfaces a real error.
     return json(
@@ -556,187 +610,42 @@ async function handleChat(request, env, ctx) {
     );
   }
 
-  // --- Retrieval (deterministic, no network) ---
-  const query = buildQuery(messages);
-  let retr = retrieve(query);
-  let buyingOffer = retr.mode !== 'grounded' && isBuying(query);
-
-  // --- Briefing mode (Option 2, READ-ONLY). ------------------------------------------------
-  // Answer from the NEWEST published briefing / weekly analysis in the
-  // BRIEFINGS KV namespace. Resolved BEFORE the canned/retrieval branches so a
-  // briefing question always answers from the live briefing, never the site KB.
-  // Failure-safe (design decision #8): any miss (no briefing noun, KV timeout
-  // 2s, missing index, bad JSON, empty) leaves `briefing` null and falls
-  // through to the normal pipeline below. The path never throws into the
-  // request; briefings.js logs the `t_`-style outcome (intent + reason, no
-  // text) itself.
-  // Intent detection runs on the LATEST user message (not the 2-message query)
-  // to keep the noun guard precise and avoid follow-up contamination.
-  const latestUser = messages.length ? String(messages[messages.length - 1].content || '') : '';
-  let briefing = null;
-  if (env && env.BRIEFINGS) {
-    try {
-      const b = await resolveBriefing(env, latestUser);
-      if (b && b.ok && b.entry) briefing = b;
-    } catch (e) {
-      briefing = null; // absolute safety: the briefing path must never break chat
-    }
-  }
-  let briefingSysAdd = '';
-  if (briefing) {
-    // Item 1: date context for the briefing block. The resolved entry date
-    // comes from the entry's own date field, falling back to the requested
-    // date; CURRENT DATE is UTC today; NEWEST PUBLISHED ENTRY from the index.
-    // For not-found dated lookups the entry is catalog context — the block
-    // marks it as not-found so the model offers available dates.
-    const bEntryDate = (briefing.entry && briefing.entry.date) ? String(briefing.entry.date)
-      : (briefing.date ? String(briefing.date) : null);
-    const bCurrent = new Date().toISOString().slice(0, 10);
-    let bNewest = null;
-    try { bNewest = await newestPublished(env); } catch (e) { /* leave null */ }
-    const block = buildBriefingBlock(briefing.entry, briefing.intent, {
-      date: bEntryDate,
-      currentDate: bCurrent,
-      newestDate: bNewest,
-      notFound: !!briefing.notFound,
-    });
-    // Source chips: same-origin canonical pages ONLY (design decision #5).
-    const bSources = [];
-    if (briefing.intent === 'daily_latest' || briefing.intent === 'daily_dated') {
-      bSources.push(SITE + '/briefings/' + briefing.date);
-    } else if (briefing.intent === 'wa_latest' || briefing.intent === 'wa_dated') {
-      bSources.push(SITE + '/weekly-analysis/' + briefing.date);
-    } else if (briefing.intent === 'catalog') {
-      const dl = briefing.entry.daily_latest10 && briefing.entry.daily_latest10[0];
-      const wl = briefing.entry.wa_latest10 && briefing.entry.wa_latest10[0];
-      if (dl) bSources.push(SITE + '/briefings/' + dl);
-      if (wl) bSources.push(SITE + '/weekly-analysis/' + wl);
-    }
-    briefingSysAdd = block;
-    // Override the retrieval shape so the existing callModel/relay/done path
-    // is reused UNCHANGED (SSE, TTFB/relay timeouts, t_ log, source chips).
-    // chunks:[] -> buildSystemPrompt emits rules + page index only; the
-    // briefing block is appended at the callModel site below.
-    retr = { mode: 'briefing', chunks: [], sources: bSources, useCaseTitles: undefined, tokenEstimate: 0 };
-    buyingOffer = false;
-  }
-  // tokenEstimate for the done event: set after the briefing block is known so
-  // it reflects the ACTUAL prompt size (retrieval's estimate is for KB chunks).
-  const briefingTokenEstimate = briefing ? Math.round((buildSystemPrompt(retr, { buyingOffer }).length + briefingSysAdd.length + latestUser.length) / 4) : null;
-  if (briefingTokenEstimate != null) retr.tokenEstimate = briefingTokenEstimate;
-  // ---------------------------------------------------------------------------
-
-  // --- Canned no-match (NOT buying, NOT social): no model call, no KB passed. ---
-  if (retr.mode === 'canned') {
-    logQuestion(query, env, ctx);
-    return sseResponse({
-      originHost,
-      events: [
-        { event: 'start', data: JSON.stringify({ ok: true, mode: 'canned' }) },
-        {
-          event: 'delta',
-          data: JSON.stringify({
-            text: 'I don\u2019t have that on the site \u2014 I can only answer from what\u2019s published on AppoSight.',
-          }),
-        },
-        {
-          event: 'done',
-          data: JSON.stringify({
-            no_match: true,
-            mode: 'canned',
-            contact: CONTACT_PATH,
-            contact_url: SITE + '/#contact',
-            lead_capture: false,
-            sources: [],
-            token_estimate: 0,
-            disclaimer: 'AI assistant. Chats may be processed by Google. Don\u2019t share sensitive information.',
-          }),
-        },
-      ],
-    });
-  }
-
-  // --- Log the question (no IP, no email) with 30-day TTL ---
-  logQuestion(query, env, ctx); // fire-and-forget
-
-  // --- Call the model (streaming) ---
-  // Timing anchors for the per-request t_ log (item 7). requestStart = now;
-  // ttfb = first-byte; total = when the relay finishes (ok/timeout/error).
+  // --- All JSON gates (origin/content-type/body-size/turnstile/rate-limit)
+  // have passed. Item 5: return the SSE response IMMEDIATELY with an early
+  // 'status' event so the client gets first bytes before any KV/model work.
+  // Retrieval, briefing resolution, the model call and the relay all happen
+  // INSIDE start() below. After the headers are sent, every error is an SSE
+  // 'error' event (not a JSON status) — the client is already streaming.
   const requestStart = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  // Timeouts (item 1). Defaults are the spec values (20s TTFB); each is
-  // overridable via env so tests can exercise the timeout paths fast.
-  const GEMINI_TTFB_TIMEOUT_MS = parseInt(env.GEMINI_TTFB_TIMEOUT_MS || '20000', 10);
-  let ttfbMs = null;
-  let upstream;
-  try {
-    upstream = await callModel({
-      model: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
-      apiKey: env[GEMINI_KEY_ENV],
-      systemPrompt: buildSystemPrompt(retr, { buyingOffer }) + briefingSysAdd,
-      messages,
-      timeoutMs: GEMINI_TTFB_TIMEOUT_MS,
-      thinkingLevel: (env.GEMINI_THINKING_LEVEL !== undefined) ? env.GEMINI_THINKING_LEVEL : 'MINIMAL',
-    });
-    ttfbMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - requestStart);
-  } catch (e) {
-    const up = e && e.status;
-    if (up === 404) {
-      // Model retired/absent (e.g. Gemini deprecated the configured model).
-      // Log ONLY the status code to KV (no upstream body) so operators can
-      // alert on it, then answer with the friendly contact-form pointer.
-      logModelIssue('model_404', up, env, ctx);
-      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'model_404', error_code: 404 }, env, ctx);
-      return json(
-        { error: 'model_unavailable', message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', contact: CONTACT_PATH },
-        503, corsHeaders(originHost)
-      );
-    }
-    // TTFB timeout: the upstream never sent headers within GEMINI_TTFB_TIMEOUT_MS.
-    // Distinct from a hard HTTP error — record it under a stable `timeout`
-    // outcome so operators can alert on the stall (the 10+ minute symptom).
-    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError' || /abort|timeout/i.test(String(e && e.message || '')))) {
-      logModelIssue('model_ttfb_timeout', 0, env, ctx);
-      logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'timeout', error_code: null }, env, ctx);
-      return json(
-        { error: 'timeout', message: 'That took too long. Please try again or use the contact form.', contact: CONTACT_PATH },
-        504, corsHeaders(originHost)
-      );
-    }
-    // Any other upstream error (429 quota, 5xx, network) — same friendly
-    // pointer; log the status code so operators can alert on quota burn.
-    if (up) logModelIssue('model_error_' + up, up, env, ctx);
-    logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: null, outcome: 'error', error_code: up || null }, env, ctx);
-    return json(
-      { error: 'model_unavailable', message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', contact: CONTACT_PATH },
-      502, corsHeaders(originHost)
-    );
-  }
-
-  // --- Relay upstream SSE -> our SSE, stripping the lead-capture marker ---
-  // Timeouts (item 1):
-  //   - IDLE_READ_TIMEOUT_MS (15s default): no bytes between reads -> timeout.
-  //   - OVERALL_CAP_MS (45s default): hard cap on the whole relay.
-  // On ANY timeout/error we send a friendly SSE error event, CLOSE the stream,
-  // and CANCEL the upstream reader — the response is never left open.
+  // Item 6: first-byte timeout 8000 ms (was 20000). Overridable via env so
+  // tests can exercise the timeout/retry paths fast.
+  const GEMINI_TTFB_TIMEOUT_MS = parseInt(env.GEMINI_TTFB_TIMEOUT_MS || '8000', 10);
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  let leadCapture = false;
-  let buffer = '';
-  let finishReason = null;
-  // Item 5c: accumulated raw answer + how much of its stripped form has been
-  // enqueued, so inline citations can be removed once complete and a trailing
-  // partial citation (an unclosed '[') is never leaked mid-stream.
-  let accFull = '';
-  let sentLen = 0;
+
+  // Item 5c: streaming helpers (relay). Declared here so both the error
+  // path and the relay path can enqueue events; `retr`/`buyingOffer`/
+  // `briefingSysAdd` are resolved inside start() and captured by closure.
+  let retrResolved = null;        // filled in start() after retrieval+briefing
+  let buyingOfferResolved = false;
+  let briefingSysAddResolved = '';
+  let tokenEstimateResolved = 0;
+  let ttfbMs = null;
 
   const IDLE_READ_TIMEOUT_MS = parseInt(env.IDLE_READ_TIMEOUT_MS || '15000', 10);
   const OVERALL_CAP_MS = parseInt(env.OVERALL_CAP_MS || '45000', 10);
-  const relayDeadline = Date.now() + OVERALL_CAP_MS;
 
   const stream = new ReadableStream({
     async start(controller) {
       let closed = false;
       let reader = null;
+      let leadCapture = false;
+      let buffer = '';
+      let finishReason = null;
+      let accFull = '';
+      let sentLen = 0;
+      let modelAttempts = 0; // how many model attempts were made (for the t_ log)
+
       const send = (event, data) => {
         if (closed) return;
         try { controller.enqueue(encoder.encode('event: ' + event + '\ndata: ' + data + '\n\n')); }
@@ -748,82 +657,214 @@ async function handleChat(request, env, ctx) {
         try { if (readerRef && readerRef.cancel) readerRef.cancel().catch(() => {}); } catch { /* ignore */ }
         try { controller.close(); } catch { /* ignore */ }
       };
-      const logOutcome = (outcome, error_code) =>
-        logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code }, env, ctx);
-
-      const sendTimeoutError = () => {
+      const logOutcome = (outcome, error_code, attempt) =>
+        logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code, attempt }, env, ctx);
+      const sendTimeoutError = (attempt) => {
         send('error', JSON.stringify({
           error: 'timeout',
           message: 'That took too long. Please try again or use the contact form.',
           contact: CONTACT_PATH,
+          attempt: attempt,
+        }));
+      };
+      const sendUnavailable = (attempt, code) => {
+        send('error', JSON.stringify({
+          error: 'model_unavailable',
+          message: 'Our AI assistant is temporarily unavailable. Please use our contact form instead.',
+          contact: CONTACT_PATH,
+          attempt: attempt,
         }));
       };
 
-      send('start', JSON.stringify({ ok: true, mode: retr.mode, token_estimate: retr.tokenEstimate }));
-
-      // Idle watchdog: reject if reader.read() doesn't resolve within the cap.
-      const readWithIdle = (r) => Promise.race([
-        r.read(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('__idle_timeout__')), IDLE_READ_TIMEOUT_MS)),
-      ]);
+      // Item 5: early 'status' event = the FIRST BYTES the client receives.
+      // Sent before any KV/model work, so the widget's "did we get bytes?"
+      // check passes immediately and the server owns the timeout semantics.
+      send('status', JSON.stringify({ ok: true, phase: 'working' }));
+      stage('first_byte');
 
       try {
-        reader = upstream.body.getReader();
-        while (true) {
-          if (Date.now() > relayDeadline) throw new Error('__overall_timeout__');
-          let out;
+        // --- Retrieval (deterministic, no network) ---
+        const query = buildQuery(messages);
+        let retr = retrieve(query);
+        let buyingOffer = retr.mode !== 'grounded' && isBuying(query);
+
+        // --- Briefing mode (Option 2, READ-ONLY). Resolved BEFORE the
+        // canned/retrieval branches so a briefing question always answers
+        // from the live briefing, never the site KB. Failure-safe: any miss
+        // leaves `briefing` null and falls through to the normal pipeline.
+        const latestUser = messages.length ? String(messages[messages.length - 1].content || '') : '';
+        let briefing = null;
+        if (env && env.BRIEFINGS) {
           try {
-            out = await readWithIdle(reader);
+            const b = await resolveBriefing(env, latestUser, undefined, ctx);
+            if (b && b.ok && b.entry) briefing = b;
           } catch (e) {
-            if (e && e.message === '__idle_timeout__') throw new Error('__overall_timeout__');
-            throw e; // real upstream error -> generic error path below
-          }
-          const { done, value } = out;
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-          let idx;
-          while ((idx = buffer.indexOf('\n\n')) !== -1) {
-            const event = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
-            if (!dataLine) continue;
-            const line = dataLine.slice(5).trim();
-            if (!line || line === '[DONE]') continue;
-            let chunk = '';
-            try {
-              const obj = JSON.parse(line);
-              const cand = obj && obj.candidates && obj.candidates[0];
-              if (cand && cand.finishReason) finishReason = cand.finishReason;
-              chunk = (cand && cand.content && cand.content.parts)
-                ? cand.content.parts.map((p) => p.text || '').join('')
-                : '';
-            } catch { /* non-JSON event, ignore */ }
-            if (chunk) {
-              if (chunk.includes('[[LEAD_CAPTURE]]')) leadCapture = true;
-              const clean = chunk.replace('[[LEAD_CAPTURE]]', '');
-              accFull += clean;
-              // Item 5c: strip inline citation artifacts from the ACCUMULATED
-              // answer (a citation spanning deltas is removed once complete)
-              // and hold back a trailing partial citation (unclosed '[') so a
-              // fragment like "[1" is never leaked before its "]". Emit only the
-              // newly-stripped tail beyond what we already sent.
-              const safe = safePrefix(stripInlineRefs(accFull));
-              if (safe.length > sentLen) {
-                send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
-                sentLen = safe.length;
-              }
-            }
+            stageErr('briefing_resolve', e);
+            briefing = null;
           }
         }
-        // Gemini (and some runtimes) terminate the final SSE block with a single
-        // newline, so a trailing complete block can remain in the buffer at
-        // stream end. Parse whatever is left before closing.
-        if (buffer.trim()) {
-          const event = buffer.trim();
-          const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
-          if (dataLine) {
-            const line = dataLine.slice(5).trim();
-            if (line && line !== '[DONE]') {
+        let briefingSysAdd = '';
+        if (briefing) {
+          const bEntryDate = (briefing.entry && briefing.entry.date) ? String(briefing.entry.date)
+            : (briefing.date ? String(briefing.date) : null);
+          const bCurrent = new Date().toISOString().slice(0, 10);
+          let bNewest = null;
+          try { bNewest = await newestPublished(env); } catch (e) { stageErr('briefing_newest', e); }
+          const block = buildBriefingBlock(briefing.entry, briefing.intent, {
+            date: bEntryDate,
+            currentDate: bCurrent,
+            newestDate: bNewest,
+            notFound: !!briefing.notFound,
+          });
+          const bSources = [];
+          if (briefing.intent === 'daily_latest' || briefing.intent === 'daily_dated') {
+            bSources.push(SITE + '/briefings/' + briefing.date);
+          } else if (briefing.intent === 'wa_latest' || briefing.intent === 'wa_dated') {
+            bSources.push(SITE + '/weekly-analysis/' + briefing.date);
+          } else if (briefing.intent === 'catalog') {
+            const dl = briefing.entry.daily_latest10 && briefing.entry.daily_latest10[0];
+            const wl = briefing.entry.wa_latest10 && briefing.entry.wa_latest10[0];
+            if (dl) bSources.push(SITE + '/briefings/' + dl);
+            if (wl) bSources.push(SITE + '/weekly-analysis/' + wl);
+          }
+          briefingSysAdd = block;
+          retr = { mode: 'briefing', chunks: [], sources: bSources, useCaseTitles: undefined, tokenEstimate: 0 };
+          buyingOffer = false;
+        }
+        const briefingTokenEstimate = briefing ? Math.round((buildSystemPrompt(retr, { buyingOffer }).length + briefingSysAdd.length + latestUser.length) / 4) : null;
+        if (briefingTokenEstimate != null) retr.tokenEstimate = briefingTokenEstimate;
+        stage('briefing_resolved');
+
+        // Capture for the relay/done event (closure).
+        retrResolved = retr;
+        buyingOfferResolved = buyingOffer;
+        briefingSysAddResolved = briefingSysAdd;
+        tokenEstimateResolved = retr.tokenEstimate || 0;
+
+        // --- Canned no-match (NOT buying, NOT social): no model call, no KB. ---
+        if (retr.mode === 'canned') {
+          logQuestion(query, env, ctx);
+          stage('retrieval_done');
+          send('delta', JSON.stringify({
+            text: 'I don\u2019t have that on the site \u2014 I can only answer from what\u2019s published on AppoSight.',
+          }));
+          send('done', JSON.stringify({
+            no_match: true,
+            mode: 'canned',
+            contact: CONTACT_PATH,
+            contact_url: SITE + '/#contact',
+            lead_capture: false,
+            sources: [],
+            token_estimate: 0,
+            disclaimer: 'AI assistant. Chats may be processed by Google. Don\u2019t share sensitive information.',
+          }));
+          stage('stream_done');
+          closeOut(null);
+          logOutcome('ok', null, null);
+          return;
+        }
+
+        // --- Log the question (no IP, no email) with 30-day TTL ---
+        logQuestion(query, env, ctx); // fire-and-forget
+        stage('retrieval_done');
+
+        // --- Call the model (streaming), with ONE retry (item 6) ---
+        // Retry ONCE if the first attempt times out or returns 5xx BEFORE
+        // any bytes; then the friendly error. 4xx (incl. 429 quota, 404)
+        // are NOT retried (retrying them would burn quota / hit a dead model).
+        stage('model_start');
+        let upstream;
+        const thinkingLevel = (env.GEMINI_THINKING_LEVEL !== undefined) ? env.GEMINI_THINKING_LEVEL : 'MINIMAL';
+        const modelArgs = {
+          model: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+          apiKey: env.GEMINI_API_KEY,
+          systemPrompt: buildSystemPrompt(retrResolved, { buyingOffer: buyingOfferResolved }) + briefingSysAddResolved,
+          messages,
+          timeoutMs: GEMINI_TTFB_TIMEOUT_MS,
+          thinkingLevel: thinkingLevel,
+        };
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          modelAttempts = attempt;
+          try {
+            upstream = await callModel(modelArgs);
+            ttfbMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - requestStart);
+            break;
+          } catch (e) {
+            const up = e && e.status;
+            const isTimeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError' || /abort|timeout/i.test(String(e && e.message || '')));
+            // Retryable: timeout OR 5xx-before-bytes, and only on attempt 1.
+            const retryable = attempt === 1 && (isTimeout || (typeof up === 'number' && up >= 500));
+            if (retryable) {
+              const reason = isTimeout ? 'timeout' : 'http_' + up;
+              // Item 6: retry once. Log the attempt number in the console
+              // (tail) and it is reflected in the final t_ log (attempt: 2).
+              // NO separate m_ entry — the final failure below is the single
+              // logged model issue, keeping 'exactly one m_ log' semantics.
+              console.log('[chat] stage=model_retry attempt=' + attempt + ' reason=' + reason + ' id=' + STAGE_ID);
+              stageErr('model_call_attempt' + attempt, e);
+              continue;
+            }
+            // Final failure — classify, log, and emit an SSE error event.
+            // Each branch writes BOTH a t_ entry (outcome+error_code) and a
+            // console.error line (rule 5: HTTP status no longer surfaces
+            // failures once the SSE stream is open).
+            if (up === 404) {
+              logModelIssue('model_404', 404, env, ctx);
+              logOutcome('error', 404, attempt);
+              sendUnavailable(attempt, 404);
+              stageErr('model_error_404', new Error('upstream 404 (model_unavailable)'));
+              stage('stream_done');
+              closeOut(null);
+              return;
+            }
+            if (isTimeout) {
+              logModelIssue('model_ttfb_timeout', 0, env, ctx);
+              logOutcome('timeout', null, attempt);
+              sendTimeoutError(attempt);
+              stageErr('model_ttfb_timeout', e);
+              stage('stream_done');
+              closeOut(null);
+              return;
+            }
+            if (typeof up === 'number') logModelIssue('model_error_' + up, up, env, ctx);
+            logOutcome('error', up || null, attempt);
+            sendUnavailable(attempt, up);
+            stageErr('model_error_' + up, e);
+            stage('stream_done');
+            closeOut(null);
+            return;
+          }
+        }
+
+        // --- Relay upstream SSE -> our SSE, stripping the lead-capture marker ---
+        const relayDeadline = Date.now() + OVERALL_CAP_MS;
+        const readWithIdle = (r) => Promise.race([
+          r.read(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('__idle_timeout__')), IDLE_READ_TIMEOUT_MS)),
+        ]);
+
+        try {
+          reader = upstream.body.getReader();
+          while (true) {
+            if (Date.now() > relayDeadline) throw new Error('__overall_timeout__');
+            let out;
+            try {
+              out = await readWithIdle(reader);
+            } catch (e) {
+              if (e && e.message === '__idle_timeout__') throw new Error('__overall_timeout__');
+              throw e;
+            }
+            const { done, value } = out;
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) !== -1) {
+              const event = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
+              if (!dataLine) continue;
+              const line = dataLine.slice(5).trim();
+              if (!line || line === '[DONE]') continue;
               let chunk = '';
               try {
                 const obj = JSON.parse(line);
@@ -832,7 +873,7 @@ async function handleChat(request, env, ctx) {
                 chunk = (cand && cand.content && cand.content.parts)
                   ? cand.content.parts.map((p) => p.text || '').join('')
                   : '';
-              } catch { /* ignore */ }
+              } catch { /* non-JSON event, ignore */ }
               if (chunk) {
                 if (chunk.includes('[[LEAD_CAPTURE]]')) leadCapture = true;
                 const clean = chunk.replace('[[LEAD_CAPTURE]]', '');
@@ -845,34 +886,76 @@ async function handleChat(request, env, ctx) {
               }
             }
           }
-          buffer = '';
-        }
-        send('done', JSON.stringify({
-          mode: retr.mode,
-          sources: retr.sources,
-          lead_capture: leadCapture,
-          token_estimate: retr.tokenEstimate,
-          finish_reason: finishReason,
-          disclaimer: 'AI assistant. Chats may be processed by Google. Don’t share sensitive information.',
-        }));
-        closeOut(reader);
-        logOutcome('ok', null);
-      } catch (e) {
-        const isTimeout = e && (e.message === '__overall_timeout__' || e.message === '__idle_timeout__');
-        if (isTimeout) {
-          sendTimeoutError();
-          closeOut(reader);
-          logModelIssue('model_stream_timeout', 0, env, ctx);
-          logOutcome('timeout', null);
-        } else {
-          send('error', JSON.stringify({
-            error: 'stream_error',
-            message: 'Please use our contact form.',
-            contact: CONTACT_PATH,
+          if (buffer.trim()) {
+            const event = buffer.trim();
+            const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
+            if (dataLine) {
+              const line = dataLine.slice(5).trim();
+              if (line && line !== '[DONE]') {
+                let chunk = '';
+                try {
+                  const obj = JSON.parse(line);
+                  const cand = obj && obj.candidates && obj.candidates[0];
+                  if (cand && cand.finishReason) finishReason = cand.finishReason;
+                  chunk = (cand && cand.content && cand.content.parts)
+                    ? cand.content.parts.map((p) => p.text || '').join('')
+                    : '';
+                } catch { /* ignore */ }
+                if (chunk) {
+                  if (chunk.includes('[[LEAD_CAPTURE]]')) leadCapture = true;
+                  const clean = chunk.replace('[[LEAD_CAPTURE]]', '');
+                  accFull += clean;
+                  const safe = safePrefix(stripInlineRefs(accFull));
+                  if (safe.length > sentLen) {
+                    send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
+                    sentLen = safe.length;
+                  }
+                }
+              }
+            }
+            buffer = '';
+          }
+          send('done', JSON.stringify({
+            mode: retrResolved.mode,
+            sources: retrResolved.sources,
+            lead_capture: leadCapture,
+            token_estimate: tokenEstimateResolved,
+            finish_reason: finishReason,
+            disclaimer: 'AI assistant. Chats may be processed by Google. Don\u2019t share sensitive information.',
           }));
+          stage('stream_done');
           closeOut(reader);
-          logOutcome('error', null);
+          logOutcome('ok', null, modelAttempts);
+        } catch (e) {
+          const isTimeout = e && (e.message === '__overall_timeout__' || e.message === '__idle_timeout__');
+          if (isTimeout) {
+            sendTimeoutError(null);
+            closeOut(reader);
+            logModelIssue('model_stream_timeout', 0, env, ctx);
+            logOutcome('timeout', null, null);
+            stageErr('relay_timeout', e);
+          } else {
+            send('error', JSON.stringify({
+              error: 'stream_error',
+              message: 'Please use our contact form.',
+              contact: CONTACT_PATH,
+            }));
+            closeOut(reader);
+            logOutcome('error', null, null);
+            stageErr('relay_error', e);
+          }
         }
+      } catch (e) {
+        // A throw from the retrieval/briefing/model phase (before relay).
+        stageErr('start_pipeline', e);
+        logOutcome('error', (e && e.status) || null, modelAttempts || null);
+        send('error', JSON.stringify({
+          error: 'stream_error',
+          message: 'Please use our contact form.',
+          contact: CONTACT_PATH,
+        }));
+        stage('stream_done');
+        closeOut(reader);
       }
     },
   });
@@ -886,6 +969,7 @@ async function handleChat(request, env, ctx) {
     },
   });
 }
+
 
 // Fire-and-forget question log (never blocks the stream, never throws).
 function logQuestion(question, env, ctx) {
@@ -920,14 +1004,16 @@ function elapsedMs(startAnchor) {
 // Fire-and-forget: never throws, never blocks the stream.
 function logTiming(rec, env, ctx) {
   const key = 't_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  kvPut(env, ctx, key, JSON.stringify({
+  const val = {
     ts: new Date().toISOString(),
     ttfb_ms: rec.ttfb_ms,
     total_ms: rec.total_ms,
     finish_reason: rec.finish_reason,
     outcome: rec.outcome,
     error_code: rec.error_code,
-  }), { expirationTtl: TIMING_LOG_TTL });
+  };
+  if (rec.attempt != null) val.attempt = rec.attempt;
+  kvPut(env, ctx, key, JSON.stringify(val), { expirationTtl: TIMING_LOG_TTL });
 }
 
 // ---------------------------------------------------------------------------

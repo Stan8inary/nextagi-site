@@ -431,13 +431,15 @@ await t('T7 Gemini 429/5xx -> friendly 502 + contact form, NO upstream body/key 
   };
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'how long did the dc upgrade take' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), ENV_BASE);
   globalThis.fetch = prev;
-  assert(r.status === 502, '502 (not 429 passthrough), got ' + r.status);
+  // Item 5: model-error path now returns 200 + SSE error event (not 502 JSON).
+  assert(r.status === 200, '200 (SSE error, not 502 passthrough), got ' + r.status);
   const txt = await r.text();
-  const j = JSON.parse(txt);
+  const j = sseError(txt);
+  assert(j, 'an SSE error event was emitted');
+  assert(j.error === 'model_unavailable', 'error=model_unavailable, got ' + j.error);
   assert(j.message === 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', 'friendly message, got ' + j.message);
   assert(j.contact === '/#contact', 'contact anchor present, got ' + j.contact);
   // NO upstream error detail, model name, or any secret may leak to the visitor.
-  // (The worker's own "error" key = model_unavailable is fine; upstream is not.)
   assert(!/RESOURCE_EXHAUSTED|quota exceeded|code:|status:|"code"|"status"|"message":"RESOURCE/i.test(txt), 'no upstream error body leaked: ' + txt);
   assert(!/gemini|generativelanguage/i.test(txt), 'no model name / endpoint leaked');
   assert(!/x-goog-api-key|sk-|api[_-]?key|Bearer/i.test(txt), 'no key header leaked');
@@ -1360,12 +1362,15 @@ await t('REG6 upstream 404 -> 503 friendly message, no upstream body leak', asyn
     return new Response('not mocked', { status: 599 });
   };
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), freshLimiterEnv());
-  assert(r.status === 503, 'upstream 404 -> 503 (got ' + r.status + ')');
-  const body = await r.json();
+  // Item 5: model-error path now returns 200 + SSE error event (not 503 JSON).
+  assert(r.status === 200, 'upstream 404 -> 200 SSE (not 503 JSON), got ' + r.status);
+  const txt = await r.text();
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
   assert(body.error === 'model_unavailable', 'error is model_unavailable (got ' + body.error + ')');
   assert(typeof body.message === 'string' && /contact form/i.test(body.message), 'friendly contact-form message');
   assert(!!body.contact, 'contact path present');
-  assert(!JSON.stringify(body).includes(LEAK) && !JSON.stringify(body).includes('UPSTREAM'), 'no upstream body leaked to client');
+  assert(!txt.includes(LEAK) && !txt.includes('UPSTREAM'), 'no upstream body leaked to client');
 });
 
 await t('REG7 404 path logs ONLY status code to KV (kind/status/ts), no body', async () => {
@@ -1381,7 +1386,8 @@ await t('REG7 404 path logs ONLY status code to KV (kind/status/ts), no body', a
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv });
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv });
+  await r.text(); // drain so start() runs and the model call fires (item 5)
   const mlogs = [...kv.m.entries()].filter(([k, v]) => k.startsWith('m_model_404_'));
   assert(mlogs.length === 1, 'exactly one model_404 log entry (got ' + mlogs.length + ')');
   const rec = JSON.parse(mlogs[0][1]);
@@ -1403,8 +1409,11 @@ await t('REG8 KV outage during 404 path still yields friendly 503 (never breaks 
   };
   const kvBroken = { put: () => { throw new Error('KV down'); }, get: async () => { throw new Error('KV down'); } };
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kvBroken });
-  assert(r.status === 503, 'still 503 (got ' + r.status + ')');
-  const body = await r.json();
+  // Item 5: model-error path now returns 200 + SSE error event (not 503 JSON).
+  assert(r.status === 200, 'still 200 SSE (not 503 JSON), got ' + r.status);
+  const txt = await r.text();
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
   assert(body.error === 'model_unavailable' && /contact form/i.test(body.message), 'friendly message intact');
 });
 
@@ -1426,10 +1435,13 @@ await t('REG10 5xx (503 upstream) still maps to 502 model_unavailable (non-404 p
     return new Response('not mocked', { status: 599 });
   };
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), freshLimiterEnv());
-  assert(r.status === 502, 'upstream 503 -> 502 (got ' + r.status + ')');
-  const body = await r.json();
+  // Item 5: model-error path now returns 200 + SSE error event (not 502 JSON).
+  assert(r.status === 200, 'upstream 503 -> 200 SSE (not 502 JSON), got ' + r.status);
+  const txt = await r.text();
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
   assert(body.error === 'model_unavailable', 'error model_unavailable (got ' + body.error + ')');
-  assert(!JSON.stringify(body).includes('server error detail xyz'), 'no upstream body leaked');
+  assert(!txt.includes('server error detail xyz'), 'no upstream body leaked');
 });
 
 await t('REG11 Gemini 429 (quota) -> friendly 502, no upstream text, status-code-only KV log', async () => {
@@ -1447,9 +1459,11 @@ await t('REG11 Gemini 429 (quota) -> friendly 502, no upstream text, status-code
   };
   const kv = makeKV();
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv });
-  assert(r.status === 502, '429 upstream -> 502 (not 429 passthrough), got ' + r.status);
+  // Item 5: model-error path now returns 200 + SSE error event (not 502 JSON).
+  assert(r.status === 200, '429 upstream -> 200 SSE (not 502 passthrough), got ' + r.status);
   const txt = await r.text();
-  const body = JSON.parse(txt);
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
   assert(body.error === 'model_unavailable', 'error model_unavailable (got ' + body.error + ')');
   assert(body.message === 'Our AI assistant is temporarily unavailable. Please use our contact form instead.', 'friendly message, got ' + body.message);
   assert(body.contact === '/#contact', 'contact anchor present');
@@ -1534,8 +1548,11 @@ await t('TO2 Gemini hang BEFORE headers (TTFB) -> 504 friendly timeout, t_ log o
   const kv = makeKV();
   const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), env);
-  assert(r.status === 504, 'TTFB hang -> 504 (got ' + r.status + ')');
-  const body = await r.json();
+  // Item 5: TTFB timeout now returns 200 + SSE error event (not 504 JSON).
+  assert(r.status === 200, 'TTFB hang -> 200 SSE (not 504 JSON), got ' + r.status);
+  const txt = await r.text();
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
   assert(body.error === 'timeout', 'error=timeout (got ' + body.error + ')');
   assert(body.message === TO_NOTICE, 'friendly timeout message (got ' + body.message + ')');
   assert(!!body.contact, 'contact anchor present');
@@ -1545,6 +1562,248 @@ await t('TO2 Gemini hang BEFORE headers (TTFB) -> 504 friendly timeout, t_ log o
   assert(rec.outcome === 'timeout', 't_ log outcome=timeout (got ' + JSON.stringify(rec) + ')');
   assert(rec.ttfb_ms === null, 'ttfb_ms is null (no first byte)');
   assert(!JSON.stringify(rec).includes('What does AppoSight do'), 'no question text in t_ log');
+});
+
+// ---------------------------------------------------------------------------
+// NEW-5 (must fail on old code): early 'status' event is the FIRST SSE event.
+// Old code's first event was 'start' (after the model call resolved).
+// ---------------------------------------------------------------------------
+await t('NEW-5a early status event is the FIRST SSE event', async () => {
+  // Mock Gemini so the model call resolves (only the ORDER of events is under
+  // test — the model content is irrelevant).
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      return new Response(
+        'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } }
+      );
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv() });
+  globalThis.fetch = prev;
+  const txt = await r.text();
+  // First non-empty block must be `event: status`.
+  const blocks = txt.split('\n\n').filter((b) => b.trim());
+  assert(blocks.length >= 1, 'at least one SSE block');
+  const first = blocks[0];
+  assert(/^event:\s*status/m.test(first), 'first SSE block is `event: status` (got: ' + first.slice(0, 60) + ')');
+});
+
+// NEW-5b: first model call hangs (aborts at TTFB cap), second succeeds -> answer.
+// Must NOT be treated as a final failure. t_ log outcome must be 'ok', and the
+// final attempt count must be 2.
+await t('NEW-5b first model call hangs, second succeeds -> answer (retry works)', async () => {
+  const prev = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      callCount += 1;
+      if (callCount === 1) {
+        // Simulate a hang: reject with an AbortError when the signal aborts.
+        const sig = opts.signal;
+        return new Promise((_resolve, reject2) => {
+          const onAbort2 = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject2(e); };
+          if (sig && sig.aborted) onAbort2(); else if (sig) sig.addEventListener('abort', onAbort2, { once: true });
+          /* never resolves on its own — hang */
+        });
+      }
+      // Second call: succeed with a tiny SSE stream.
+      return new Response(
+        'data: {"candidates":[{"content":{"parts":[{"text":"OK from retry"}]},"finishReason":"STOP"}]}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } }
+      );
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const r = await postChat('What does AppoSight do?', env);
+  globalThis.fetch = prev;
+  assert(r.status === 200, '200 (retry succeeded), got ' + r.status);
+  const txt = await r.text();
+  assert(callCount === 2, 'model was called exactly twice (got ' + callCount + ')');
+  assert(txt.includes('OK from retry'), 'the retry answer was relayed (got: ' + txt.slice(0, 200) + ')');
+  assert(!/event:\s*error/m.test(txt), 'no SSE error event on successful retry');
+  // t_ log: outcome must be 'ok' (not 'timeout'), and attempt must be 2.
+  const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+  assert(tlogs.length >= 1, 't_ log written (got ' + tlogs.length + ')');
+  const rec = JSON.parse(tlogs[tlogs.length - 1][1]);
+  assert(rec.outcome === 'ok', 't_ outcome=ok after retry (got ' + JSON.stringify(rec) + ')');
+  assert(rec.attempt === 2, 't_ attempt=2 (got ' + JSON.stringify(rec) + ')');
+});
+
+// NEW-5c: both calls hang -> friendly error within about 2x TTFB cap.
+// Old code: single attempt -> 1x TTFB cap then 504. New code: 2 attempts
+// (each 8s by default, 50ms here) -> total ~2x before the SSE error.
+await t('NEW-5c both model calls hang -> friendly error within ~2x TTFB cap', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      const sig = opts.signal;
+      return new Promise((_resolve, reject) => {
+        const onAbort = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); };
+        if (sig && sig.aborted) onAbort(); else if (sig) sig.addEventListener('abort', onAbort, { once: true });
+        /* never resolves on its own — hang */
+      });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const t0 = Date.now();
+  const r = await postChat('What does AppoSight do?', env);
+  const elapsed = Date.now() - t0;
+  globalThis.fetch = prev;
+  // Total wall time must be >= 1 cap (at least one attempt ran) and < 5 caps
+  // (a generous bound — the spec says "within about 2x", we give 5x slack for
+  // Node timing variance). The point is: the client does NOT wait 10s+ (default
+  // 8000ms x 2 = 16000ms) for this test because we used 50ms caps.
+  assert(elapsed >= 50, 'elapsed >= 1 TTFB cap (got ' + elapsed + 'ms)');
+  assert(elapsed < 250, 'elapsed < 5 TTFB caps (got ' + elapsed + 'ms)');
+  assert(r.status === 200, '200 (SSE error, not 504), got ' + r.status);
+  const txt = await r.text();
+  const body = sseError(txt);
+  assert(body, 'an SSE error event was emitted');
+  assert(body.error === 'timeout', 'error=timeout after both attempts failed (got ' + body.error + ')');
+  assert(body.message === TO_NOTICE, 'friendly timeout message');
+  assert(!!body.contact, 'contact anchor present');
+  const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+  assert(tlogs.length >= 1, 't_ log written (got ' + tlogs.length + ')');
+  const rec = JSON.parse(tlogs[tlogs.length - 1][1]);
+  assert(rec.outcome === 'timeout', 't_ outcome=timeout (got ' + JSON.stringify(rec) + ')');
+  assert(rec.attempt === 2, 't_ attempt=2 (both attempts ran, got ' + JSON.stringify(rec) + ')');
+});
+
+// NEW-5d: a stall after 'status' but before Gemini headers still ends with an
+// SSE error AND a closed stream (client must not hang).
+// Simulated by making the model call hang past the TTFB cap (retry also hangs),
+// which is the "stall before headers" case. The stream MUST close (r.text()
+// resolves) so the widget's reader.read() returns done.
+await t('NEW-5d stall before Gemini headers -> SSE error + closed stream', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      const sig = opts.signal;
+      return new Promise((_resolve, reject) => {
+        const onAbort = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); };
+        if (sig && sig.aborted) onAbort(); else if (sig) sig.addEventListener('abort', onAbort, { once: true });
+        /* never resolves on its own — hang */
+      });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const r = await postChat('What does AppoSight do?', env);
+  globalThis.fetch = prev;
+  // The stream MUST close — r.text() must resolve (not hang).
+  const txt = await r.text();
+  assert(txt.trim().length > 0, 'stream body is non-empty');
+  assert(/event:\s*status/m.test(txt), 'early status event present');
+  assert(/event:\s*error/m.test(txt), 'an SSE error event is present');
+  // If the stream were NOT closed, r.text() would have hung (timeout).
+  // Getting here proves it closed.
+});
+
+// NEW-5e: console.log never contains question text or token variables.
+// The stage logger is item 1 — it MUST NOT log user text or tokens.
+// We intercept console.log, fire a request, and scan every captured line.
+await t('NEW-5e console.log never contains question text or token variables', async () => {
+  const MARKER_QUESTION = 'UNIQUE-QUESTION-MARKER-abc123-do-not-leak';
+  const MARKER_TOKEN = 'UNIQUE-TOKEN-MARKER-xyz789-do-not-leak';
+  const captured = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...args) => { captured.push(args.join(' ')); origLog.apply(console, args); };
+  console.error = (...args) => { captured.push('ERR:' + args.join(' ')); origErr.apply(console, args); };
+  try {
+    const r = await postChat(MARKER_QUESTION, {
+      ...ENV_BASE,
+      // A fake token that would leak if verifyTurnstile or stageErr logged it.
+    });
+    // Also exercise a 403 turnstile-fail path to catch token logging there.
+    const r2 = await (async () => {
+      const resp = await worker.fetch(req('/api/chat', {
+        method: 'POST',
+        body: { messages: [{ role: 'user', content: MARKER_QUESTION }], cf_turnstile_response: MARKER_TOKEN },
+        origin: 'https://apposight.com',
+      }), ENV_BASE);
+      return resp;
+    })();
+    await r.text();
+    await r2.text();
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+  }
+  const all = captured.join('\n');
+  assert(!all.includes(MARKER_QUESTION), 'no question text in console output (got: ' + all.slice(0, 200) + ')');
+  assert(!all.includes(MARKER_TOKEN), 'no token in console output (got: ' + all.slice(0, 200) + ')');
+  // Also: the stage lines MUST be present (item 1 works).
+  assert(captured.some((l) => /stage=request_received/.test(l)), 'stage=request_received was logged');
+  assert(captured.some((l) => /stage=body_ok|stage=turnstile_ok|stage=limiter_ok|stage=first_byte/.test(l)), 'at least one later stage was logged');
+});
+
+// NEW-5f: a failing KV put logs via console.error (item 2) and does NOT
+// produce an unhandled promise rejection. The request still succeeds.
+await t('NEW-5f failing KV put logs via console.error, no unhandled rejection', async () => {
+  const errLines = [];
+  const origErr = console.error;
+  console.error = (...args) => { errLines.push(args.join(' ')); origErr.apply(console, args); };
+  const unhandled = [];
+  const onUnrejection = (e) => unhandled.push(e && e.reason ? e.reason.message : String(e));
+  process.on('unhandledRejection', onUnrejection);
+  // Self-contained model mock: earlier tests (TO1/TO2) override globalThis.fetch
+  // with a HANGING mock and do not restore it. We MUST install a SUCCESS mock so
+  // the stream completes quickly (this test is about KV logging, not the model).
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      return new Response('data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (u.includes('challenges.cloudflare.com')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    // Item 2: a real KV put failure is a REJECTED PROMISE (Workers KV returns
+    // a promise). A synchronous throw is swallowed by kvPut's try/catch and
+    // would never reach the .catch handler we're asserting on.
+    const kvBroken = {
+      put: () => Promise.reject(new Error('KV down')),
+      get: async () => null,
+    };
+    const r = await postChat('What does AppoSight do?', { ...freshLimiterEnv(), KV_LOG: kvBroken });
+    await r.text();
+    // Wait a microtask tick for any promise rejections to surface.
+    await new Promise((res) => setTimeout(res, 20));
+  } finally {
+    console.error = origErr;
+    process.off('unhandledRejection', onUnrejection);
+    globalThis.fetch = prev;
+  }
+  assert(errLines.some((l) => /KV put failed/.test(l)), 'a console.error "[chat] KV put failed" line was emitted (got: ' + errLines.join(' | ').slice(0, 200) + ')');
+  assert(unhandled.length === 0, 'no unhandled promise rejections (got: ' + unhandled.join(' | ').slice(0, 200) + ')');
 });
 
 await t('TO3 retrieval follow-up: "What is EntraSync?" after AKS -> entrasync #1 (latest-only rule)', async () => {
@@ -2007,6 +2266,211 @@ await t('A7d site-mismatch (non-expired) -> turnstile_failed, no hint', async ()
     assert(threw && threw.name === 'AbortError', 'AbortError propagated, got ' + (threw && threw.name));
     assert(fetchCalls.length === 1, 'timeout is NOT retried (only 1 fetch), got ' + fetchCalls.length);
   });
+
+  // ======================================================================
+  // W1 — item 7: send() first-byte tracking + classification (behavioral)
+  // ======================================================================
+  // The REAL send() is extracted from chat-widget.js and driven with stubs
+  // (state, DOM, fetch, token broker) so we can verify:
+  //   W1a  no-bytes + abort   -> ONE retry with a FRESH Turnstile token,
+  //                              then the "took too long" contact-form msg.
+  //   W1b  bytes-then-stall   -> "The response stalled. Please try again."
+  //                              (NO retry — the server already started)
+  //   W1c  success stream     -> answer rendered, lead form on lead_capture,
+  //                              assistant history truncated to <=700 chars.
+  //   W1d  SSE `error` event  -> server's friendly message shown, NOT the
+  //                              "stalled" or "took too long" notice.
+  //   (e)  the finally block ALWAYS re-enabled the composer + send button.
+  // ======================================================================
+
+  const W1_sendStart = widgetSrc.indexOf('async function send()');
+  assert(W1_sendStart !== -1, 'send() present in chat-widget.js');
+  const W1_sendEnd = (() => {
+    let depth = 0, started = false;
+    for (let i = W1_sendStart; i < widgetSrc.length; i++) {
+      const ch = widgetSrc[i];
+      if (ch === '{') { depth++; started = true; }
+      else if (ch === '}') { depth--; if (started && depth === 0) return i + 1; }
+    }
+    return -1;
+  })();
+  assert(W1_sendEnd > W1_sendStart, 'send() body extractable');
+  const W1_sendSrc = widgetSrc.slice(W1_sendStart, W1_sendEnd);
+
+  // Real helper functions from the widget source.
+  const W1_stripSrc = widgetSrc.slice(
+    widgetSrc.indexOf('function apoStripSourcesBlock'),
+    widgetSrc.indexOf('function apoRenderLinks'));
+  const W1_renderSrc = widgetSrc.slice(
+    widgetSrc.indexOf('function apoRenderLinks'),
+    widgetSrc.indexOf('// APO_RENDER_LINKS_END') + '// APO_RENDER_LINKS_END'.length);
+  const W1_helperSrc = W1_stripSrc + '\n' + W1_renderSrc;
+
+  // Real apoFetchWithRetry factory.
+  const W1_retrySrc = widgetSrc.slice(
+    widgetSrc.indexOf('function apoFetchWithRetry'),
+    widgetSrc.indexOf('// APO_FETCH_RETRY_END') + '// APO_FETCH_RETRY_END'.length);
+  const W1_apoFetchWithRetryFactory = (new Function(W1_retrySrc + '\nreturn apoFetchWithRetry;'))();
+
+  // A fake SSE body whose getReader() returns scripted string chunks, then
+  // (if `stallAfter`) throws an AbortError on the next read() — simulating a
+  // stalled stream. The widget's catch classifies via isAbort(err) (name-based)
+  // AND shared.gotBytes (set on the first chunk), so this deterministic
+  // AbortError drives the no-bytes-vs-bytes classification without real timers.
+  const W1_fakeBody = (chunks, stallAfter) => ({
+    getReader: () => {
+      let i = 0;
+      return {
+        read: async () => {
+          if (i < chunks.length) {
+            const c = chunks[i++];
+            return { done: false, value: new TextEncoder().encode(c) };
+          }
+          if (stallAfter) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+          return { done: true, value: undefined };
+        },
+        releaseLock: () => {},
+      };
+    },
+  });
+  const W1_abort = () => { const e = new Error('aborted'); e.name = 'AbortError'; return e; };
+
+  const W1_makeEnv = (responder, extra) => {
+    const captured = { notices: [], busy: [], fetchCalls: [] };
+    // A DOM element stub that ACTUALLY manages its children, so
+    // apoRenderLinks' `while(container.firstChild) removeChild(...)` loop
+    // terminates (a no-op removeChild would hang it forever).
+    const elStub = () => {
+      const kids = [];
+      return {
+        value: '', innerHTML: '', textContent: '', style: {},
+        appendChild: (n) => { kids.push(n); return n; },
+        removeChild: (n) => { const i = kids.indexOf(n); if (i >= 0) kids.splice(i, 1); return n; },
+        remove: () => {},
+        get firstChild() { return kids[0] || null; },
+        querySelector: () => elStub(), querySelectorAll: () => [elStub()],
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+        addEventListener: () => {}, focus: () => {},
+        scrollHeight: 0, scrollTop: 0,
+      };
+    };
+    const state = { busy: false, maxMsg: 4000, messages: [] };
+    const env = {
+      captured, state,
+      pushMessage: () => elStub(),
+      notice: (text, isError) => { captured.notices.push({ text, isError }); },
+      setBusy: (b) => { captured.busy.push(b); state.busy = b; },
+      renderSources: () => {},
+      renderLeadForm: () => { captured.leadFormRendered = true; },
+      $: (sel) => (sel === '.composer input' ? { value: 'hello world' } : elStub()),
+      API: '/api/chat',
+      getTurnstileToken: async () => 'broker_tok_' + (++captured.tokenSeq),
+      renewTurnstileToken: async () => 'broker_renew_' + (++captured.tokenSeq),
+      responder,
+      document: null, // force apoRenderLinks onto its textContent-only branch
+    };
+    captured.tokenSeq = 0;
+    Object.assign(env, extra || {});
+    return env;
+  };
+
+  const W1_runSend = async (env) => {
+    // ONE counting stub is the `fetch` for the ENTIRE send(): it backs both
+    // apoFetchWithRetry (initial) AND issueOnce (item-7 retry). env.responder
+    // is (callIndex, url, opts) => Response so a test can serve a different
+    // body per call (e.g. stall first, then stall again on retry).
+    const countingFetch = async (url, opts) => {
+      env.captured.fetchCalls.push({
+        url,
+        token: opts && opts.body ? JSON.parse(opts.body).cf_turnstile_response : null,
+      });
+      return env.responder(env.captured.fetchCalls.length, url, opts);
+    };
+    // Pass the counting stub as both `fetch` (for issueOnce) and as the
+    // factory's fetchImpl (for apoFetchWithRetry). The helpers (apoRenderLinks /
+    // apoStripSourcesBlock) are defined INSIDE the new Function body from
+    // W1_helperSrc, so we do NOT pass them as parameters (that would shadow them).
+    const apoFetchWithRetryFactory = W1_apoFetchWithRetryFactory;
+    const apoFetchWithRetry = (fetchImpl, getFreshToken, renewToken) =>
+      apoFetchWithRetryFactory(fetchImpl, getFreshToken, renewToken);
+    const fn = new Function(
+      'state', 'pushMessage', 'notice', 'setBusy', 'renderSources', 'renderLeadForm',
+      '$', 'API', 'getTurnstileToken', 'renewTurnstileToken',
+      'apoFetchWithRetry',
+      'setTimeout', 'clearTimeout', 'TextEncoder', 'AbortController',
+      'fetch', 'console',
+      W1_helperSrc + '\n' + W1_sendSrc + '\nreturn send;');
+    const send = fn(env.state, env.pushMessage, env.notice, env.setBusy,
+      env.renderSources, env.renderLeadForm, env.$, env.API,
+      env.getTurnstileToken, env.renewTurnstileToken,
+      (fi, g, r) => apoFetchWithRetryFactory(fi, g, r),
+      globalThis.setTimeout, globalThis.clearTimeout, TextEncoder, AbortController,
+      countingFetch, console);
+    await send();
+    return env.captured;
+  };
+
+  await t('W1a no-bytes abort -> ONE retry with FRESH token, then "took too long"', async () => {
+    const env = W1_makeEnv((callIndex, url, opts) => ({
+      ok: true, status: 200,
+      body: W1_fakeBody([], true), // NO bytes, then the stream stalls
+    }));
+    env.state.messages = [{ role: 'user', content: 'hello world' }];
+    const cap = await W1_runSend(env);
+    assert(cap.notices.length === 1, 'one notice, got ' + JSON.stringify(cap.notices));
+    assert(/took too long/i.test(cap.notices[0].text), 'contact-form "took too long", got: ' + cap.notices[0].text);
+    assert(!/stalled/i.test(cap.notices[0].text), 'NOT "stalled"');
+    // Initial (apoFetchWithRetry) + ONE retry (issueOnce) = 2 fetch calls.
+    assert(cap.fetchCalls.length === 2, 'initial + 1 retry = 2 fetch calls, got ' + cap.fetchCalls.length);
+    assert(/^broker_tok_\d+$/.test(cap.fetchCalls[0].token),
+      'initial used a broker token, got ' + cap.fetchCalls[0].token);
+    assert(/^broker_renew_\d+$/.test(cap.fetchCalls[1].token),
+      'retry used a FRESH broker token (renewed), got ' + cap.fetchCalls[1].token);
+    assert(cap.busy[0] === true, 'setBusy(true) on start');
+    assert(cap.busy[cap.busy.length - 1] === false, 'finally re-enabled the composer');
+  });
+
+  await t('W1b bytes-then-stall -> "The response stalled. Please try again." (NO retry)', async () => {
+    const env = W1_makeEnv((callIndex, url, opts) => ({
+      ok: true, status: 200,
+      body: W1_fakeBody(['event: delta\ndata: {"text":"ok"}\n\n'], true), // first byte, then stall
+    }));
+    env.state.messages = [{ role: 'user', content: 'hello' }];
+    const cap = await W1_runSend(env);
+    assert(cap.notices.length === 1, 'one notice, got ' + JSON.stringify(cap.notices));
+    assert(/stalled/i.test(cap.notices[0].text), 'stall notice, got: ' + cap.notices[0].text);
+    assert(!/took too long/i.test(cap.notices[0].text), 'NOT "took too long"');
+    assert(cap.fetchCalls.length === 1, 'NO retry (server already started), got ' + cap.fetchCalls.length);
+    assert(cap.busy[cap.busy.length - 1] === false, 'finally re-enabled');
+  });
+
+  await t('W1c success -> answer rendered, lead form, history truncated to <=700', async () => {
+    const longAnswer = 'x'.repeat(2000);
+    const sse = 'event: start\ndata: {"stream_id":"s1"}\n\n'
+      + 'event: delta\ndata: {"text":"' + longAnswer + '"}\n\n'
+      + 'event: done\ndata: {"lead_capture":true,"sources":[]}\n\n';
+    const env = W1_makeEnv((callIndex, url, opts) => ({ ok: true, status: 200, body: W1_fakeBody([sse], false) }));
+    env.state.messages = []; // fresh chat: send() pushes the composer text (user) itself
+    const cap = await W1_runSend(env);
+    assert(cap.notices.length === 0, 'no error notices, got ' + JSON.stringify(cap.notices));
+    assert(env.state.messages.length === 2, 'user + assistant in history, got ' + env.state.messages.length);
+    assert(env.state.messages[1].role === 'assistant', 'assistant in history');
+    assert(env.state.messages[1].content.length <= 700, 'truncated <=700, got ' + env.state.messages[1].content.length);
+    assert(cap.leadFormRendered === true, 'lead form rendered (lead_capture=true)');
+    assert(cap.busy[cap.busy.length - 1] === false, 'finally re-enabled');
+  });
+
+  await t('W1d SSE error event -> server message, NOT "stalled" / "took too long"', async () => {
+    const sse = 'event: error\ndata: {"message":"Our AI assistant is temporarily unavailable. Please use our contact form instead.","contact":"/#contact","error":"model_unavailable"}\n\n';
+    const env = W1_makeEnv((callIndex, url, opts) => ({ ok: true, status: 200, body: W1_fakeBody([sse], false) }));
+    env.state.messages = [{ role: 'user', content: 'hello' }];
+    const cap = await W1_runSend(env);
+    assert(cap.notices.length === 1, 'one notice, got ' + JSON.stringify(cap.notices));
+    assert(/contact form/i.test(cap.notices[0].text), 'contact-form msg, got: ' + cap.notices[0].text);
+    assert(!/stalled/i.test(cap.notices[0].text), 'NOT "stalled"');
+    assert(!/took too long/i.test(cap.notices[0].text), 'NOT "took too long"');
+    assert(cap.busy[cap.busy.length - 1] === false, 'finally re-enabled');
+  });
 }
 
 
@@ -2086,7 +2550,22 @@ const briefEnv = (seed) => ({
 
 function postChat(question, env, body) {
   const bodyObj = body || { messages: [{ role: 'user', content: question }], cf_turnstile_response: 'tok' };
-  return worker.fetch(req('/api/chat', { method: 'POST', body: bodyObj, origin: 'https://apposight.com' }), env);
+  return (async () => {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: bodyObj, origin: 'https://apposight.com' }), env);
+    const txt = await r.text();
+    return new Response(txt, { status: r.status, headers: r.headers });
+  })();
+}
+// Item 5: extract the SSE 'error' event payload from a drained stream text.
+function sseError(txt) {
+  const blocks = txt.split('\n\n');
+  for (const b of blocks) {
+    if (/^event:\s*error/m.test(b)) {
+      const m = b.match(/data:\s*(\{.*\})/);
+      if (m) { try { return JSON.parse(m[1]); } catch { return null; } }
+    }
+  }
+  return null;
 }
 async function doneEvent(r) {
   const txt = await r.text();
