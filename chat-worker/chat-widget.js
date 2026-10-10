@@ -450,7 +450,13 @@ function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
     if (text.length > state.maxMsg) { notice('Message too long (max ' + state.maxMsg + ' chars).', true); return; }
 
     state.messages.push({ role: 'user', content: text });
-    state.messages = state.messages.slice(-12); // enforce 6 turns
+    state.messages = state.messages.slice(-8); // send only the last 4 turns
+    // Assistant history is untrusted data: truncate each assistant message to
+    // 700 chars before sending (server also enforces this) so a long prior
+    // answer can never balloon the payload.
+    const sendMsgs = state.messages.map((m) =>
+      m.role === 'assistant' ? { role: 'assistant', content: String(m.content || '').slice(0, 700) }
+                             : { role: m.role, content: m.content });
     input.value = '';
     pushMessage('user', text);
     setBusy(true);
@@ -494,14 +500,27 @@ function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
       // Abort (timeout) propagates straight to the timeout notice below.
       armOverall();
       const chatFetch = apoFetchWithRetry(fetch, getTurnstileToken, renewTurnstileToken);
-      const resp = await chatFetch(API, { messages: state.messages }, ac.signal);
+      const resp = await chatFetch(API, { messages: sendMsgs }, ac.signal);
 
       if (!resp.ok || !resp.body) {
+        // Translate server error codes to friendly text (item 3: never show a
+        // raw error code like "message_too_long" to the end user).
+        const FRIENDLY = {
+          message_too_long: 'That message is a bit too long. Please shorten it or try again.',
+          invalid_role: 'Something went wrong with your message. Please try again.',
+          too_many_turns: 'This conversation got long. Start a new chat to continue.',
+          payload_too_large: 'That message is a bit too long. Please shorten it or try again.',
+        };
         let msg = 'Please use our contact form.';
-        try { const j = await resp.json(); msg = j.message || j.error || msg; } catch {}
+        try {
+          const j = await resp.json();
+          const code = j.error;
+          if (code && FRIENDLY[code]) msg = FRIENDLY[code];
+          else if (typeof j.message === 'string' && j.message) msg = j.message;
+        } catch {}
         typing.remove();
         notice(msg, true);
-        return;
+        return; // the finally block re-enables the composer + send button
       }
 
       const reader = resp.body.getReader();
@@ -550,7 +569,10 @@ function apoFetchWithRetry(fetchImpl, getFreshToken, renewToken) {
       if (!fullText.trim()) { typing.remove(); notice('No answer available. Please use our contact form.', true); return; }
       fullText = apoStripSourcesBlock(fullText);
       apoRenderLinks(botBox, fullText); // item 5: re-render the stripped text with tappable links
-      state.messages.push({ role: 'assistant', content: fullText });
+      // Store assistant history truncated (untrusted data; keep the start) so
+      // the widget's own rolling history never carries a full long answer.
+      state.messages.push({ role: 'assistant', content: fullText.slice(0, 700) });
+      state.messages = state.messages.slice(-8);
       if (leadCapture) renderLeadForm();
     } catch (err) {
       // fetch-level abort (60s cap fired before headers) or any other throw.

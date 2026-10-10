@@ -43,6 +43,7 @@ import widgetText from './widget.js';
 // directly to assert top-K URLs/scores without a model.
 import { retrieve, buildQuery, INDEX, isBuying } from './retrieval.js';
 import { stripInlineRefs, safePrefix } from './text.js';
+import { resolveBriefing, buildBriefingBlock, newestPublished } from './briefings.js';
 
 // Gemini API-key env var name, built from parts so the secret-name literal
 // never appears in the bundle (avoids secret-scrubbing of the source file).
@@ -70,9 +71,13 @@ function originAllowed(origin, env) {
   return false;
 }
 
-const MAX_TURNS = 6;
-const MAX_MSG_CHARS = 500;
-const MAX_MESSAGES = MAX_TURNS * 2;
+const MAX_TURNS = 6;          // user turns (counted AFTER assistant trimming)
+const MAX_MSG_CHARS = 500;    // per-message cap for USER messages (last + history)
+const MAX_ASSISTANT_CHARS = 700; // assistant history truncated to this (keep start)
+const MAX_KEEP_ASSISTANT = 2;    // keep only the last 2 assistant messages
+const MAX_TOTAL_CHARS = 6000;    // total history payload after truncation -> trim oldest
+const MAX_PAYLOAD_BYTES = 20000; // raw request body hard cap -> 413 payload_too_large
+const MAX_MESSAGES = MAX_TURNS * 2; // legacy: total msg bound (kept for tests)
 const PER_IP_PER_MINUTE = 20;
 const DAILY_CAP = 500;
 const QUESTION_LOG_TTL = 30 * 86400; // 30 days
@@ -134,12 +139,12 @@ function buildSystemPrompt(retr, { buyingOffer = false } = {}) {
     '  third-party system. You may describe what AppoSight does, not do it.',
     '- Keep answers short and friendly, in a professional tone.',
     '- QUALITATIVE INFO: if the reference data gives only a qualitative or '
-    + 'relative description (e.g. "days, not weeks", "a straightforward '
-    + 'sequence", "in seconds", "6.3 seconds" for scan time) and NO exact '
-    + 'published figure for the question, say exactly that — restate the '
-    + 'qualitative description the site gives and state plainly that no '
-    + 'exact figure is published. Do NOT answer with "I\'m not sure" alone '
-    + 'and do NOT invent or extrapolate a number the page never states.',
+    + 'relative description (a description that implies a magnitude but '
+    + 'states no exact figure) and NO exact published figure for the '
+    + 'question, say exactly that — restate the qualitative description '
+    + 'the site gives and state plainly that no exact figure is published. '
+    + 'Do NOT answer with "I\'m not sure" alone and do NOT invent or '
+    + 'extrapolate a number the page never states.',
     '- STYLE: do NOT put inline citations, bracketed references, numbered'
     + ' cites, or a "Sources:" list inside your answer. The chat UI already shows'
     + ' source chips; your text should be clean prose only.',
@@ -423,19 +428,72 @@ async function handleChat(request, env, ctx) {
   if (!ctype.includes('application/json')) return json({ error: 'bad_content_type' }, 415);
 
   let body;
+  let rawText;
   try {
-    body = await request.json();
+    rawText = await request.text();
+  } catch {
+    return json({ error: 'invalid_json' }, 400);
+  }
+  // Hard byte cap on the RAW request body (item 2, distinct error). Applied
+  // BEFORE parsing/trimming — a body this large is never accepted.
+  if (rawText && new TextEncoder().encode(rawText).length > MAX_PAYLOAD_BYTES) {
+    return json({ error: 'payload_too_large', max: MAX_PAYLOAD_BYTES }, 413);
+  }
+  try {
+    body = JSON.parse(rawText);
   } catch {
     return json({ error: 'invalid_json' }, 400);
   }
 
-  const messages = Array.isArray(body && body.messages) ? body.messages : null;
+  let messages = Array.isArray(body && body.messages) ? body.messages : null;
   if (!messages || messages.length === 0) return json({ error: 'empty_messages' }, 400);
-  if (messages.length > MAX_MESSAGES) return json({ error: 'too_many_turns', max: MAX_MESSAGES }, 400);
-  for (const m of messages) {
-    if (typeof (m && m.content) !== 'string') return json({ error: 'bad_message' }, 400);
-    if (m.content.length > MAX_MSG_CHARS) return json({ error: 'message_too_long', max: MAX_MSG_CHARS }, 400);
+
+  // --- Role + per-message validation (message_too_long fix) ---
+  // ALLOWED ROLES: user and assistant only. Anything else is rejected.
+  if (messages.some((m) => !m || (m.role !== 'user' && m.role !== 'assistant') || typeof m.content !== 'string')) {
+    return json({ error: 'invalid_role' }, 400);
   }
+  // The 500-char per-message cap applies ONLY to user-role messages (the last
+  // user message and any user message in history) — NOT to assistant messages,
+  // which are untrusted data we truncate (below) instead of rejecting.
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+  if (!lastUser || lastUser.content.length > MAX_MSG_CHARS) {
+    return json({ error: 'message_too_long', max: MAX_MSG_CHARS }, 400);
+  }
+  if (messages.some((m) => m.role === 'user' && m !== lastUser && m.content.length > MAX_MSG_CHARS)) {
+    return json({ error: 'message_too_long', max: MAX_MSG_CHARS }, 400);
+  }
+  // --- Trim the history (assistant = untrusted data) ---
+  // Assistant history is treated as UNTRUSTED DATA: it is NEVER placed in the
+  // system prompt (buildSystemPrompt takes only `retr` + buyingOffer) and is
+  // passed to the model solely as prior turns. Retrieval + intent detection
+  // run on USER messages only (buildQuery / latestUser below).
+  // (1) truncate every assistant message to 700 chars (keep the start)
+  let trimmed = messages.map((m) => ({
+    role: m.role,
+    content: m.role === 'assistant' ? m.content.slice(0, MAX_ASSISTANT_CHARS) : m.content,
+  }));
+  // (2) keep only the last 2 assistant messages (drop older ones)
+  {
+    const aIdx = [];
+    trimmed.forEach((m, i) => { if (m.role === 'assistant') aIdx.push(i); });
+    const drop = new Set(aIdx.slice(0, Math.max(0, aIdx.length - MAX_KEEP_ASSISTANT)));
+    for (const i of [...drop].sort((a, b) => b - a)) trimmed.splice(i, 1);
+  }
+  // (3) total-payload cap: trim the OLDEST history first (the current last
+  //     message is pinned), keeping the most recent turns.
+  {
+    const last = trimmed[trimmed.length - 1];
+    const histChars = () => trimmed.slice(0, -1).reduce((a, m) => a + m.content.length, 0);
+    while (trimmed.length > 1 && histChars() + last.content.length > MAX_TOTAL_CHARS) trimmed.splice(0, 1);
+    while (trimmed.length > 1 && trimmed[0].role === 'assistant') trimmed.splice(0, 1);
+  }
+  // (4) turn limit, counted AFTER trimming (user-role turns).
+  if (trimmed.filter((m) => m.role === 'user').length > MAX_TURNS) {
+    return json({ error: 'too_many_turns', max: MAX_TURNS }, 400);
+  }
+  messages = trimmed; // downstream (buildQuery, latestUser, model call) sees the trimmed history
+
 
   // --- Per-IP throttle FIRST (cheap, atomic, stops floods; before Turnstile) ---
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
@@ -500,8 +558,73 @@ async function handleChat(request, env, ctx) {
 
   // --- Retrieval (deterministic, no network) ---
   const query = buildQuery(messages);
-  const retr = retrieve(query);
-  const buyingOffer = retr.mode !== 'grounded' && isBuying(query);
+  let retr = retrieve(query);
+  let buyingOffer = retr.mode !== 'grounded' && isBuying(query);
+
+  // --- Briefing mode (Option 2, READ-ONLY). ------------------------------------------------
+  // Answer from the NEWEST published briefing / weekly analysis in the
+  // BRIEFINGS KV namespace. Resolved BEFORE the canned/retrieval branches so a
+  // briefing question always answers from the live briefing, never the site KB.
+  // Failure-safe (design decision #8): any miss (no briefing noun, KV timeout
+  // 2s, missing index, bad JSON, empty) leaves `briefing` null and falls
+  // through to the normal pipeline below. The path never throws into the
+  // request; briefings.js logs the `t_`-style outcome (intent + reason, no
+  // text) itself.
+  // Intent detection runs on the LATEST user message (not the 2-message query)
+  // to keep the noun guard precise and avoid follow-up contamination.
+  const latestUser = messages.length ? String(messages[messages.length - 1].content || '') : '';
+  let briefing = null;
+  if (env && env.BRIEFINGS) {
+    try {
+      const b = await resolveBriefing(env, latestUser);
+      if (b && b.ok && b.entry) briefing = b;
+    } catch (e) {
+      briefing = null; // absolute safety: the briefing path must never break chat
+    }
+  }
+  let briefingSysAdd = '';
+  if (briefing) {
+    // Item 1: date context for the briefing block. The resolved entry date
+    // comes from the entry's own date field, falling back to the requested
+    // date; CURRENT DATE is UTC today; NEWEST PUBLISHED ENTRY from the index.
+    // For not-found dated lookups the entry is catalog context — the block
+    // marks it as not-found so the model offers available dates.
+    const bEntryDate = (briefing.entry && briefing.entry.date) ? String(briefing.entry.date)
+      : (briefing.date ? String(briefing.date) : null);
+    const bCurrent = new Date().toISOString().slice(0, 10);
+    let bNewest = null;
+    try { bNewest = await newestPublished(env); } catch (e) { /* leave null */ }
+    const block = buildBriefingBlock(briefing.entry, briefing.intent, {
+      date: bEntryDate,
+      currentDate: bCurrent,
+      newestDate: bNewest,
+      notFound: !!briefing.notFound,
+    });
+    // Source chips: same-origin canonical pages ONLY (design decision #5).
+    const bSources = [];
+    if (briefing.intent === 'daily_latest' || briefing.intent === 'daily_dated') {
+      bSources.push(SITE + '/briefings/' + briefing.date);
+    } else if (briefing.intent === 'wa_latest' || briefing.intent === 'wa_dated') {
+      bSources.push(SITE + '/weekly-analysis/' + briefing.date);
+    } else if (briefing.intent === 'catalog') {
+      const dl = briefing.entry.daily_latest10 && briefing.entry.daily_latest10[0];
+      const wl = briefing.entry.wa_latest10 && briefing.entry.wa_latest10[0];
+      if (dl) bSources.push(SITE + '/briefings/' + dl);
+      if (wl) bSources.push(SITE + '/weekly-analysis/' + wl);
+    }
+    briefingSysAdd = block;
+    // Override the retrieval shape so the existing callModel/relay/done path
+    // is reused UNCHANGED (SSE, TTFB/relay timeouts, t_ log, source chips).
+    // chunks:[] -> buildSystemPrompt emits rules + page index only; the
+    // briefing block is appended at the callModel site below.
+    retr = { mode: 'briefing', chunks: [], sources: bSources, useCaseTitles: undefined, tokenEstimate: 0 };
+    buyingOffer = false;
+  }
+  // tokenEstimate for the done event: set after the briefing block is known so
+  // it reflects the ACTUAL prompt size (retrieval's estimate is for KB chunks).
+  const briefingTokenEstimate = briefing ? Math.round((buildSystemPrompt(retr, { buyingOffer }).length + briefingSysAdd.length + latestUser.length) / 4) : null;
+  if (briefingTokenEstimate != null) retr.tokenEstimate = briefingTokenEstimate;
+  // ---------------------------------------------------------------------------
 
   // --- Canned no-match (NOT buying, NOT social): no model call, no KB passed. ---
   if (retr.mode === 'canned') {
@@ -549,7 +672,7 @@ async function handleChat(request, env, ctx) {
     upstream = await callModel({
       model: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
       apiKey: env[GEMINI_KEY_ENV],
-      systemPrompt: buildSystemPrompt(retr, { buyingOffer }),
+      systemPrompt: buildSystemPrompt(retr, { buyingOffer }) + briefingSysAdd,
       messages,
       timeoutMs: GEMINI_TTFB_TIMEOUT_MS,
       thinkingLevel: (env.GEMINI_THINKING_LEVEL !== undefined) ? env.GEMINI_THINKING_LEVEL : 'MINIMAL',

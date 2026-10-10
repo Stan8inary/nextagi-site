@@ -21,6 +21,13 @@ routes = [
 binding = "KV_LOG"
 id = "a4108bff241144c6893525dcd7102ffa"
 
+# --- Briefings: READ-ONLY access to the main worker's BRIEFINGS namespace ---
+# The chat worker never writes to this namespace (enforced by a tests.js scan
+# that fails on any BRIEFINGS.put / delete / list-write in chat-worker source).
+[[kv_namespaces]]
+binding = "BRIEFINGS"
+id = "0d7f71da2f33419f9956c85fabe5e3c5"
+
 # --- Durable Object: accurate per-IP minute counter + global daily cap ---
 # (per-IP minute counter uses DO state; the global daily counter is a KV
 #  key with a 24h TTL so it auto-resets each day)

@@ -251,6 +251,9 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   // plus one chunk from EVERY use-case detail page so the model can enumerate
   // all use cases by title. Appended AFTER the ranked chunks (grounded) or
   // home+about (social) so the primary topical context still leads.
+  // Also (item 5) include the HOME + ABOUT pages so a services/capabilities
+  // question covers the service areas listed on the home page — e.g.
+  // "What's new in your services?" must retrieve /Use-Cases PLUS home.
   if (listingQuery && !isBuying(query)) {
     const seen = new Set(selected.map((c) => c.url + '|' + (c.heading || '')));
     const add = (ch) => {
@@ -259,6 +262,8 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
       if (seen.has(key)) return;
       pushIf(ch); if (selected[selected.length - 1] === ch) seen.add(key);
     };
+    add(CHUNKS.find((c) => c.url === '/'));       // item 5: home (service areas)
+    add(CHUNKS.find((c) => c.url === '/about'));  // item 5: about
     add(CHUNKS.find((c) => c.url === '/Use-Cases'));
     for (const p of knowledge.filter((k) => k.url.startsWith('/use-cases/'))) {
       add(CHUNKS.find((c) => c.url === p.url));
@@ -293,6 +298,11 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   // (the answer is grounded on it), even if the ranked top-3 didn't surface it.
   if (listingQuery && !sources.includes('/Use-Cases')) {
     sources = ['/Use-Cases', ...sources.filter((u) => u !== '/Use-Cases')];
+  }
+  // Item 5: a listing query is also grounded on HOME (service areas), so its
+  // chips include '/' too (the model can cite the home page's service areas).
+  if (listingQuery && !sources.includes('/')) {
+    sources = ['/', ...sources];
   }
 
   // Item 3: the canonical list of use-case page titles (listing page + one per
