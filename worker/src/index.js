@@ -5347,6 +5347,9 @@ export default {
 
         // Handle API endpoint for contact form
         if (url.pathname === '/api/contact' && request.method === 'POST') {
+            if (!isAllowedContactOrigin(request, url)) {
+                return jsonResponse({ error: 'Invalid origin.' }, 403);
+            }
             return handleContactForm(request, env);
         }
 
@@ -5525,6 +5528,33 @@ export default {
     },
 };
 
+// Origin policy for /api/contact (CSRF defense-in-depth; the rate limit and
+// validation still apply on top). Option B:
+//   - a PRESENT Origin that is not allowed  -> reject
+//   - no Origin but a PRESENT Referer that is not allowed -> reject
+//   - neither header present                -> allow (non-browser / SW / app
+//     clients are tolerated; rate limit + validation remain the real gate)
+// Accepts same-site Origins and same-host Referers.
+function isAllowedContactOrigin(request, url) {
+    const origin = request.headers.get('Origin');
+    const referer = request.headers.get('Referer');
+    const host = url.host;
+    const allowedHosts = new Set([host, 'apposight.com', 'www.apposight.com']);
+    function hostOf(v) {
+        try { return new URL(v).host; } catch (e) { return null; }
+    }
+    if (origin) {
+        const h = hostOf(origin);
+        return !!(h && allowedHosts.has(h));
+    }
+    if (referer) {
+        const h = hostOf(referer);
+        return !!(h && allowedHosts.has(h));
+    }
+    // Neither Origin nor Referer present -> allow (rate limit still applies).
+    return true;
+}
+
 async function handleContactForm(request, env) {
     try {
         const body = await request.json();
@@ -5583,26 +5613,46 @@ async function handleContactForm(request, env) {
                 id: submissionId,
                 timestamp,
                 name: sanitizedName,
-                email: sanitizedEmail
+                email: sanitizedEmail,
+                email_sent: null
             });
             await env.CONTACT_FORMS.put('submissions_list', JSON.stringify(submissionsList));
         }
 
-        console.log(`New contact from ${sanitizedName} <${sanitizedEmail}> - ID ${submissionId}`);
+        // PII-safe log: id only (name/email must never reach CF logs)
+        console.log('Contact form submission stored, id=' + submissionId);
 
-        // Send email notification to admin via Brevo
-        await sendBrevoNotification({
-            name: sanitizedName,
-            email: sanitizedEmail,
-            phone: sanitizedPhone || null,
-            message: sanitizedMessage,
-        }, env);
+        // Email sends are best-effort: the KV record is the source of truth.
+        // A Brevo failure must NOT change the visitor-facing response.
+        // Both sends run in parallel, each capped at 5s, so worst-case wait ~5s.
+        const [notif, reply] = await Promise.all([
+            sendBrevoNotification({
+                name: sanitizedName,
+                email: sanitizedEmail,
+                phone: sanitizedPhone || null,
+                message: sanitizedMessage,
+            }, env),
+            sendAutoReply({
+                name: sanitizedName,
+                email: sanitizedEmail,
+            }, env),
+        ]);
 
-        // Send auto-reply to the inquirer
-        await sendAutoReply({
-            name: sanitizedName,
-            email: sanitizedEmail,
-        }, env);
+        const emailSent = !!(notif.sent && reply.sent);
+        if (env.CONTACT_FORMS) {
+            // Stamp the stored record with the real delivery outcome.
+            try {
+                const rawRecord = await env.CONTACT_FORMS.get(submissionId);
+                if (rawRecord) {
+                    const rec = JSON.parse(rawRecord);
+                    rec.email_sent = emailSent;
+                    rec.email_status = { notif: notif.status, reply: reply.status };
+                    await env.CONTACT_FORMS.put(submissionId, JSON.stringify(rec));
+                }
+            } catch (e) {
+                console.error('Failed to stamp email_sent on record:', e && e.name ? e.name : 'error');
+            }
+        }
 
         return jsonResponse({
             success: true,
@@ -5616,18 +5666,34 @@ async function handleContactForm(request, env) {
     }
 }
 
+// fetch with a hard 5s timeout. Returns null on timeout/network error
+// (caller treats null as a failed send; never throws into the request path).
+async function fetchWithTimeout(url, options, timeoutMs = 5000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+        if (err && (err.name === 'AbortError' || err.name === 'TimeoutError')) return null;
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 // Send email notification via Brevo API
 async function sendBrevoNotification(submission, env) {
     const brevoApiKey = env.BREVO_API_KEY;
     if (!brevoApiKey) {
         console.warn('BREVO_API_KEY not set - email notification skipped');
-        return;
+        return { sent: false, status: 'skipped' };
     }
+    const timeoutMs = Number(env.BREVO_TIMEOUT_MS) > 0 ? Number(env.BREVO_TIMEOUT_MS) : 5000;
 
     try {
         const phoneLine = submission.phone ? `\nPhone: ${submission.phone}` : '';
 
-        await fetch('https://api.brevo.com/v3/smtp/email', {
+        const res = await fetchWithTimeout('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'api-key': brevoApiKey,
@@ -5669,10 +5735,20 @@ async function sendBrevoNotification(submission, env) {
                     </html>
                 `,
             }),
-        });
+        }, timeoutMs);
+        if (!res) {
+            console.error('Brevo notification failed: status=timeout');
+            return { sent: false, status: 'timeout' };
+        }
+        if (!res.ok) {
+            console.error('Brevo notification failed: status=' + res.status);
+            return { sent: false, status: res.status };
+        }
+        return { sent: true, status: res.status };
     } catch (err) {
-        console.error('Failed to send Brevo notification:', err);
+        console.error('Failed to send Brevo notification:', err && err.name ? err.name : 'error');
         // Don't fail the form submission if email fails
+        return { sent: false, status: 'exception' };
     }
 }
 
@@ -5681,11 +5757,12 @@ async function sendAutoReply(submission, env) {
     const brevoApiKey = env.BREVO_API_KEY;
     if (!brevoApiKey) {
         console.warn('BREVO_API_KEY not set - auto-reply skipped');
-        return;
+        return { sent: false, status: 'skipped' };
     }
+    const timeoutMs = Number(env.BREVO_TIMEOUT_MS) > 0 ? Number(env.BREVO_TIMEOUT_MS) : 5000;
 
     try {
-        await fetch('https://api.brevo.com/v3/smtp/email', {
+        const res = await fetchWithTimeout('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'api-key': brevoApiKey,
@@ -5726,11 +5803,21 @@ async function sendAutoReply(submission, env) {
                     </html>
                 `,
             }),
-        });
-        console.log(`Auto-reply sent to ${submission.name} <${submission.email}>`);
+        }, timeoutMs);
+        if (!res) {
+            console.error('Auto-reply failed: status=timeout');
+            return { sent: false, status: 'timeout' };
+        }
+        if (!res.ok) {
+            console.error('Auto-reply failed: status=' + res.status);
+            return { sent: false, status: res.status };
+        }
+        console.log('Auto-reply sent: status=' + res.status);
+        return { sent: true, status: res.status };
     } catch (err) {
-        console.error('Failed to send auto-reply:', err);
+        console.error('Failed to send auto-reply:', err && err.name ? err.name : 'error');
         // Don't fail the form submission if auto-reply fails
+        return { sent: false, status: 'exception' };
     }
 }
 
@@ -6226,3 +6313,7 @@ async function handlePublishWeeklyAnalysis(request, env) {
         return jsonResponse({ error: 'Failed to publish weekly analysis' }, 500);
     }
 }
+
+// TEST-ONLY named exports (used by worker/tests.js; ignored by the worker
+// runtime, which dispatches via the default export).
+export { sendBrevoNotification, sendAutoReply, fetchWithTimeout, isAllowedContactOrigin, handleContactForm };
