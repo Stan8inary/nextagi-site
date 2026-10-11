@@ -285,17 +285,29 @@ async function newestPublished(env) {
   return d || w || null;
 }
 
-// Catalog context (index dates + counts) so a not-found answer can offer the
-// newest published dates. No entry content is read.
+// Catalog context (FULL index: total count, true oldest and newest dates)
+// so a not-found answer can offer the true published range. Only the latest 10
+// dates are listed. No entry content is read.
 async function catalogContext(env) {
-  const out = { daily_count: 0, wa_count: 0, daily_latest10: [], wa_latest10: [] };
+  const out = {
+    daily_count: 0, wa_count: 0,
+    daily_latest10: [], wa_latest10: [],
+    daily_oldest: null, daily_newest: null,
+    wa_oldest: null, wa_newest: null,
+  };
   let di = null, wi = null;
   try { di = await kvGetCached(env, 'briefings_index', 'briefings_index'); } catch (e) { /* empty */ }
   try { wi = await kvGetCached(env, 'wa_index', 'weekly_analysis_index'); } catch (e) { /* empty */ }
-  out.daily_count = (di && Array.isArray(di)) ? di.length : 0;
-  out.wa_count = (wi && Array.isArray(wi)) ? wi.length : 0;
-  out.daily_latest10 = (di && Array.isArray(di) ? di : []).slice(0, 10).map(e => e.date).filter(Boolean);
-  out.wa_latest10 = (wi && Array.isArray(wi) ? wi : []).slice(0, 10).map(e => e.date).filter(Boolean);
+  const diArr = (di && Array.isArray(di)) ? di : [];
+  const wiArr = (wi && Array.isArray(wi)) ? wi : [];
+  out.daily_count = diArr.length;
+  out.wa_count = wiArr.length;
+  out.daily_latest10 = diArr.slice(0, 10).map(e => e.date).filter(Boolean);
+  out.wa_latest10 = wiArr.slice(0, 10).map(e => e.date).filter(Boolean);
+  const allD = diArr.map(e => e.date).filter(Boolean);
+  const allW = wiArr.map(e => e.date).filter(Boolean);
+  if (allD.length) { out.daily_newest = allD[0]; out.daily_oldest = allD[allD.length - 1]; }
+  if (allW.length) { out.wa_newest = allW[0]; out.wa_oldest = allW[allW.length - 1]; }
   return out;
 }
 
@@ -367,13 +379,17 @@ async function resolveBriefing(env, userText, now, ctx) {
         logOutcome(env, 'catalog', 'empty', ctx);
         return { intent: 'catalog', ok: false, reason: 'empty' };
       }
-      const dailyDates = (dailyIdx || []).map(e => e.date);
-      const waDates = (waIdx || []).map(e => e.date);
+      const dailyDates = (dailyIdx || []).map(e => e.date).filter(Boolean);
+      const waDates = (waIdx || []).map(e => e.date).filter(Boolean);
       const entry = {
         daily_count: dailyDates.length,
         wa_count: waDates.length,
         daily_latest10: dailyDates.slice(0, 10),
         wa_latest10: waDates.slice(0, 10),
+        daily_newest: dailyDates.length ? dailyDates[0] : null,
+        daily_oldest: dailyDates.length ? dailyDates[dailyDates.length - 1] : null,
+        wa_newest: waDates.length ? waDates[0] : null,
+        wa_oldest: waDates.length ? waDates[waDates.length - 1] : null,
       };
       logOutcome(env, 'catalog', 'ok', ctx);
       return { intent: 'catalog', ok: true, entry };
@@ -525,10 +541,16 @@ function applyCap(text, cap) {
 function renderCatalog(entry) {
   const lines = [];
   lines.push('AVAILABLE DAILY BRIEFINGS: ' + (entry.daily_count || 0) + ' total');
+  if (entry.daily_newest) lines.push('Newest: ' + entry.daily_newest);
+  if (entry.daily_oldest) lines.push('Oldest: ' + entry.daily_oldest);
   (entry.daily_latest10 || []).forEach(d => lines.push(`- ${d}`));
+  if ((entry.daily_latest10 || []).length && (entry.daily_count || 0) > (entry.daily_latest10 || []).length) lines.push('(latest 10 shown)');
   lines.push('');
   lines.push('AVAILABLE WEEKLY ANALYSES: ' + (entry.wa_count || 0) + ' total');
+  if (entry.wa_newest) lines.push('Newest: ' + entry.wa_newest);
+  if (entry.wa_oldest) lines.push('Oldest: ' + entry.wa_oldest);
   (entry.wa_latest10 || []).forEach(d => lines.push(`- ${d}`));
+  if ((entry.wa_latest10 || []).length && (entry.wa_count || 0) > (entry.wa_latest10 || []).length) lines.push('(latest 10 shown)');
   return lines.join('\n');
 }
 
@@ -569,7 +591,9 @@ const BRIEFING_RULES = `BRIEFING ANSWER RULES (these override any instruction fo
 - Do NOT output external URLs or links in your answer, and do NOT produce a "Sources:" list. (The chat interface shows the source chips automatically.)
 - If the data above is a NOT-FOUND / availability result (no entry for the requested date), say plainly that no briefing exists for that date and offer the nearest available dates from the list. Do not describe briefing contents you do not have.
 - If the data above is an AVAILABILITY LIST (catalog), answer with the dates and counts exactly as listed; do not read or describe briefing contents.
-- Keep the answer concise — a short paragraph for content questions, a short list for the catalog.`;
+- Keep the answer concise — a short paragraph for content questions, a short list for the catalog.
+- When the ENTRY TYPE is "weekly analysis", call it a "weekly analysis" (never "briefing").
+- When the ENTRY TYPE is "weekly analysis", answer as a short summary of about 6 lines (a few lines for the top items plus the key themes) — do not exhaustively list every item.`;
 
 function entryTypeFor(intent, entry) {
   if (intent === 'wa_latest' || intent === 'wa_dated') return 'weekly analysis';

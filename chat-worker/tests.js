@@ -348,14 +348,21 @@ await t('S2 model request: system prompt has guardrails', async () => {
   assert(lastModel.headers['x-goog-api-key'] !== 'test-secret', 'turnstile secret NOT sent to model');
 });
 
-await t('S3 question logged to KV without IP', async () => {
+await t('S3 ok non-buying request: at most one t_ key, NO q_, no question text or IP (Item 0)', async () => {
   const before = [...kv.keys()].length;
-  await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), ENV_BASE);
-  const after = [...kv.keys()].length;
-  assert(after > before, 'a question key was written');
-  const val = JSON.parse([...kv.values()].at(-1));
-  assert(val.question && !val.question.includes('203.'), 'question text logged, no IP');
-  assert(!('ip' in val) || !/^\d+\.\d+/.test(val.ip || ''), 'no IP stored');
+  // Item 0: a plain ok, non-buying request no longer writes a q_ question key.
+  // It writes at most ONE sampled t_ timing key. Pin the write slot so the
+  // (1-in-4) sampler is deterministic and we can assert the exact key set.
+  await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...ENV_BASE, KV_FORCE_OK_WRITE: '1' });
+  const newKeys = [...kv.keys()].slice(before);
+  assert(newKeys.length <= 1, 'an ok request writes at most one KV key (got ' + newKeys.length + ')');
+  assert(newKeys.filter((k) => k.startsWith('q_')).length === 0, 'NO q_ question key on a plain ok non-buying request');
+  // Whatever key was written must carry NO question text and NO IP.
+  for (const k of newKeys) {
+    const rec = JSON.parse(kv.get(k) || 'null');
+    assert(!(rec && rec.question), 'no question text stored in ' + (k || 'null').split('_')[0] + '_ key');
+    assert(!/^\d+\.\d+/.test(JSON.stringify(rec) || ''), 'no IP stored');
+  }
 });
 
 await t('T1 "ignore previous instructions" -> guardrail in prompt, model call still made', async () => {
@@ -487,12 +494,15 @@ await t('R3 "pricing" (buying intent) -> lead-capture offer, NOT canned, NO chun
   assert(!sp.includes('The following site-content excerpts'), 'no retrieved chunk block (buying)');
 });
 
-await t('R4 "who are you" (smalltalk) -> social, home+about in <reference_data>, NO canned', async () => {
+await t('R4 "who are you" (smalltalk) -> social, home+about+service-areas in <reference_data>, NO canned', async () => {
   const r = R.retrieve('who are you');
   assert(r.mode === 'social', 'social mode, got ' + r.mode);
-  assert(r.chunks.length === 2, 'home + about chunks, got ' + r.chunks.length);
+  // Part D: social mode now grounds the model on the HOME service areas (not
+  // just hero + about). Assert the service-area headings are present.
+  assert(r.chunks.length >= 2, 'home + about + service areas (got ' + r.chunks.length + ')');
   assert(r.chunks.some((c) => c.url === '/'), 'home page chunk included');
   assert(r.chunks.some((c) => c.url === '/about'), 'about page chunk included');
+  assert(r.chunks.some((c) => c.heading === 'AI Penetration Testing'), 'service area: AI Penetration Testing');
   await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), ENV_BASE);
   assert(lastModel, 'model WAS called for smalltalk');
   const sp = lastModel.body.systemInstruction.parts[0].text;
@@ -540,13 +550,16 @@ await t('R7 injection w/ content words -> grounded on dc-upgrade, guardrails, NO
   assert(sp.length < 20000, 'bounded prompt (full KB = ~143k)');
 });
 
-await t('R8 brand fallback ("what does AppoSight do") -> social, home+about, NOT canned', async () => {
+await t('R8 brand fallback ("what does AppoSight do") -> social, home+about+service-areas, NOT canned', async () => {
   const q = 'what does AppoSight do';
   const r = R.retrieve(q);
   assert(r.mode === 'social', 'social (brand fallback), got ' + r.mode);
-  assert(r.chunks.length === 2, 'home + about chunks, got ' + r.chunks.length);
+  // Part D: brand/social mode grounds the model on the HOME service areas.
+  assert(r.chunks.length >= 2, 'home + about + service areas (got ' + r.chunks.length + ')');
   assert(r.chunks.some((c) => c.url === '/'), 'home included');
   assert(r.chunks.some((c) => c.url === '/about'), 'about included');
+  assert(r.chunks.some((c) => c.heading === 'AI Penetration Testing'), 'service area: AI Penetration Testing');
+  assert(r.chunks.some((c) => c.heading === 'Automated Recon'), 'service area: Automated Recon');
   await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: q }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), ENV_BASE);
   assert(lastModel, 'model WAS called (brand question grounded in home+about)');
   const sp = lastModel.body.systemInstruction.parts[0].text;
@@ -1546,7 +1559,7 @@ await t('TO2 Gemini hang BEFORE headers (TTFB) -> 504 friendly timeout, t_ log o
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50', KV_FORCE_OK_WRITE: '1' }; // Item 0: pin the sampled t_ write slot (no-op for non-ok, which always writes t_)
   const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), env);
   // Item 5: TTFB timeout now returns 200 + SSE error event (not 504 JSON).
   assert(r.status === 200, 'TTFB hang -> 200 SSE (not 504 JSON), got ' + r.status);
@@ -1626,7 +1639,7 @@ await t('NEW-5b first model call hangs, second succeeds -> answer (retry works)'
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50', KV_FORCE_OK_WRITE: '1' }; // Item 0: pin the sampled t_ write slot (no-op for non-ok, which always writes t_)
   const r = await postChat('What does AppoSight do?', env);
   globalThis.fetch = prev;
   assert(r.status === 200, '200 (retry succeeded), got ' + r.status);
@@ -1663,7 +1676,7 @@ await t('NEW-5c both model calls hang -> friendly error within ~2x TTFB cap', as
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50', KV_FORCE_OK_WRITE: '1' }; // Item 0: pin the sampled t_ write slot (no-op for non-ok, which always writes t_)
   const t0 = Date.now();
   const r = await postChat('What does AppoSight do?', env);
   const elapsed = Date.now() - t0;
@@ -1711,7 +1724,7 @@ await t('NEW-5d stall before Gemini headers -> SSE error + closed stream', async
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50' };
+  const env = { ...freshLimiterEnv(), KV_LOG: kv, GEMINI_TTFB_TIMEOUT_MS: '50', KV_FORCE_OK_WRITE: '1' }; // Item 0: pin the sampled t_ write slot (no-op for non-ok, which always writes t_)
   const r = await postChat('What does AppoSight do?', env);
   globalThis.fetch = prev;
   // The stream MUST close — r.text() must resolve (not hang).
@@ -1793,7 +1806,7 @@ await t('NEW-5f failing KV put logs via console.error, no unhandled rejection', 
       put: () => Promise.reject(new Error('KV down')),
       get: async () => null,
     };
-    const r = await postChat('What does AppoSight do?', { ...freshLimiterEnv(), KV_LOG: kvBroken });
+    const r = await postChat('What does AppoSight do?', { ...freshLimiterEnv(), KV_LOG: kvBroken, KV_FORCE_OK_WRITE: '1' }); // Item 0: pin the sampled t_ write slot so the rejecting put is deterministically reached
     await r.text();
     // Wait a microtask tick for any promise rejections to surface.
     await new Promise((res) => setTimeout(res, 20));
@@ -1930,7 +1943,7 @@ await t('TO15 t_ timing log value shape: ttfb_ms/total_ms/finish_reason/outcome/
     return new Response('not mocked', { status: 599 });
   };
   const kv = makeKV();
-  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv });
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', body: GOOD, origin: 'https://apposight.com' }), { ...freshLimiterEnv(), KV_LOG: kv, KV_FORCE_OK_WRITE: '1' }); // Item 0: pin the sampled t_ write slot so the t_ shape assertion is deterministic
   assert(r.status === 200, '200 (got ' + r.status + ')');
   await drainWithGuard(r, 2000);
   const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
@@ -2754,6 +2767,297 @@ await t('B12 outcome log has intent field, no briefing text', async () => {
   assert(!v.includes('Critical RCE in a widely-deployed VPN gateway'), 'no briefing text in log');
   assert(!v.includes('summary body'), 'no summary text in log');
 });
+
+// ==========================================================================
+// Part A — catalog uses the FULL index (total, true oldest, true newest)
+// ==========================================================================
+console.log('\n== Part A: catalog full-index (31 entries spanning 33 days) ==\n');
+
+await t('A1 catalog -> total 31, true oldest + newest, latest 10 shown', async () => {
+  // 31 daily entries, one per day from 2026-09-29 back 30 days -> true oldest
+  // is 2026-08-29 (33-day span). Index is NEWEST-first (date[i] desc).
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const start = new Date('2026-09-29T00:00:00Z');
+  const days = Array.from({ length: 31 }, (_, i) => new Date(start.getTime() - i * 86400000).toISOString().slice(0, 10));
+  const seed = { briefings_index: days.map(d => ({ date: d, critical_count: 1, watch_count: 0, general_count: 1 })),
+                 '2026-09-29': { date: '2026-09-29', high_priority: [{ title: 'Recent', summary: 's' }], general: [] },
+                 weekly_analysis_index: [] };
+  await postChat('what briefings do you have?', briefEnv(seed));
+  assert(lastModel, 'model called');
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('AVAILABLE DAILY BRIEFINGS'), 'catalog header');
+  assert(sp.includes('31 total'), 'total count = 31 (got ' + (sp.match(/(\d+)\s+total/)?.[1] || '?') + ')');
+  assert(sp.includes('Newest: 2026-09-29'), 'newest date 2026-09-29');
+  assert(sp.includes('Oldest: 2026-08-30'), 'oldest date 2026-08-30');
+  // latest 10 dates present (2026-09-29 back 10 days -> 2026-09-20)
+  for (const d of ['2026-09-29','2026-09-28','2026-09-27','2026-09-26','2026-09-25','2026-09-24','2026-09-23','2026-09-22','2026-09-21','2026-09-20'])
+    assert(sp.includes('- ' + d) || sp.includes(d), 'latest-10 date ' + d);
+  // "latest 10 shown" marker present because count (31) > listed (10)
+  assert(sp.includes('latest 10 shown'), '"latest 10 shown" marker present');
+  // true oldest 2026-08-30 is the STATED range boundary but NOT listed as an entry
+  assert(!/^\s*- 2026-08-30\s*$/m.test(sp), '2026-08-30 not listed as a latest-10 entry');
+});
+
+await t('A2 no-briefing-for-date -> same full range (true oldest/newest)', async () => {
+  // Same 31-entry index. A date NOT in the index (2026-09-05) must still
+  // surface the true oldest/newest of the FULL index in the not-found answer.
+  const days = Array.from({ length: 31 }, (_, i) => new Date(new Date('2026-09-29T00:00:00Z').getTime() - i * 86400000).toISOString().slice(0, 10));
+  const seed = { briefings_index: days.map(d => ({ date: d, critical_count: 1, watch_count: 0, general_count: 1 })),
+                 weekly_analysis_index: [] };
+  await postChat('summarize the briefing for 2026-09-05', briefEnv(seed));
+  assert(lastModel, 'model called');
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  // not-found path: the true range must still be shown so the model can offer it
+  assert(sp.includes('Newest: 2026-09-29'), 'newest 2026-09-29 in not-found range');
+  assert(sp.includes('Oldest: 2026-08-30'), 'oldest 2026-08-30 in not-found range');
+  assert(sp.includes('31 total'), 'total count 31 in not-found context');
+});
+
+// ==========================================================================
+// Part B — MAX_TOKENS appends a continuation note; STOP does not
+// ==========================================================================
+console.log('\n== Part B: MAX_TOKENS note (cut off) vs STOP (no note) ==\n');
+
+function sseStream(events) {
+  const enc = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(c) { events.forEach((s) => c.enqueue(enc.encode(s))); c.close(); },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+await t('B1 MAX_TOKENS finish_reason -> "(answer cut off, ask me to continue)" note', async () => {
+  const sse = [
+    'data: {"candidates":[{"content":{"parts":[{"text":"The weekly analysis"}]}}]}\n\n',
+    'data: {"candidates":[{"content":{"parts":[{"text":" covers three items."}]},"finishReason":"MAX_TOKENS"}]}\n\n',
+  ];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) return sseStream(sse);
+    if (u.includes('challenges.cloudflare.com/turnstile')) return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    assert(r.status === 200, '200 (got ' + r.status + ')');
+    const txt = await r.text();
+    assert(txt.includes('answer cut off, ask me to continue'), 'MAX_TOKENS note present');
+    assert(txt.includes('event: done'), 'done event present');
+    assert(/"finish_reason":"MAX_TOKENS"/.test(txt), 'done event reports finish_reason MAX_TOKENS');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+await t('B2 STOP finish_reason -> NO "(answer cut off...)" note', async () => {
+  const sse = [
+    'data: {"candidates":[{"content":{"parts":[{"text":"The weekly analysis"}]}}]}\n\n',
+    'data: {"candidates":[{"content":{"parts":[{"text":" covers three items."}]},"finishReason":"STOP"}]}\n\n',
+  ];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) return sseStream(sse);
+    if (u.includes('challenges.cloudflare.com/turnstile')) return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    assert(r.status === 200, '200 (got ' + r.status + ')');
+    const txt = await r.text();
+    assert(!txt.includes('answer cut off'), 'STOP must NOT add the cut-off note');
+    assert(txt.includes('event: done'), 'done event present');
+    assert(/"finish_reason":"STOP"/.test(txt), 'done event reports finish_reason STOP');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+// ==========================================================================
+// Part C — weekly wording: "weekly analysis" not "briefing"
+// ==========================================================================
+console.log('\n== Part C: weekly entry wording (call it "weekly analysis") ==\n');
+
+await t('C1 weekly entry -> prompt rule says call it "weekly analysis" (never "briefing")', async () => {
+  const waSeed = {
+    briefings_index: [],
+    'wa_2026-10-03': { date: '2026-10-03', title: 'Weekly Analysis — Week of Oct 3', summary: 'VPN RCE', the_take: 'VPN RCE exploited in the wild', why_it_matters: 'credential stuffing spike', high_priority: [], general: [] },
+    weekly_analysis_index: [
+      { date: '2026-10-03', title: 'Weekly Analysis — Week of Oct 3', summary: 'VPN RCE + credential stuffing' },
+    ],
+  };
+  await postChat('Can you summarize the latest weekly analysis?', briefEnv(waSeed));
+  assert(lastModel, 'model called');
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('ENTRY TYPE: weekly analysis'), 'ENTRY TYPE = weekly analysis (got ' + (sp.match(/ENTRY TYPE:[^\n]*/)?.[0] || 'none') + ')');
+  // The rule: when ENTRY TYPE is "weekly analysis", call it a "weekly analysis" (never "briefing").
+  assert(/call it a "weekly analysis"/.test(sp) || /never\s*"briefing"/.test(sp), 'weekly wording rule present in prompt');
+  assert(sp.includes('about 6 lines'), 'short-summary (~6 lines) rule present');
+});
+
+// ==========================================================================
+// Part D — brand/social mode sends home service-area excerpts, no example values
+// ==========================================================================
+console.log('\n== Part D: brand/social service-area excerpts (no example values) ==\n');
+
+await t('D1 brand/social prompt contains service-area headings and NO example values', async () => {
+  const b = R.brandExcerpts();
+  // required service-area headings (the four the user named + hero + about)
+  assert(b.headings.includes('AI Penetration Testing'), 'heading AI Penetration Testing');
+  assert(b.headings.includes('Automated Recon'), 'heading Automated Recon');
+  assert(b.headings.includes('Exploit Chaining'), 'heading Exploit Chaining');
+  assert(b.headings.includes('Report Generation'), 'heading Report Generation');
+  assert(b.headings.some(h => /Continuous Monitoring/.test(h)), 'heading Continuous Monitoring');
+  assert(b.headings.some(h => /Intelligence, Reimagined/.test(h)), 'hero heading');
+  // under the ~3000 char cap
+  assert(b.chars <= 3000, 'total chars ' + b.chars + ' <= 3000 cap');
+  // token estimate is exposed
+  assert(typeof b.tokenEstimate === 'number' && b.tokenEstimate > 0, 'tokenEstimate present');
+  // NO example values (the "AI Penetration Testing" demo transcript is stripped):
+  const blob = b.chunks.map(c => c.heading + ' ' + c.text).join(' \n ');
+  assert(!/CVE[-\s]?\d{4}-\d{2,}/i.test(blob), 'no CVE id');
+  assert(!/target\.com|apposight:~|ai-pentest-agent/.test(blob), 'no demo domain/tool');
+  assert(!/\b\d{1,4}\s*[,]\s*\d{1,4}\s*[,]\s*\d{1,4}/.test(blob), 'no comma port-list');
+  assert(!/--target|--scan|--ports|--chain/.test(blob), 'no --tool flags');
+  assert(!/OpenSSH|Apache 2\.4|Nginx 1\.18|Tomcat 9\.0|MySQL 3306/.test(blob), 'no demo service versions');
+  // and the MODEL-FACING prompt (social mode) contains the same headings
+  await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+  assert(lastModel, 'model called');
+  const sp = lastModel.body.systemInstruction.parts[0].text;
+  assert(sp.includes('AI Penetration Testing'), 'prompt has AI Penetration Testing');
+  assert(sp.includes('Automated Recon'), 'prompt has Automated Recon');
+  assert(sp.includes('Exploit Chaining'), 'prompt has Exploit Chaining');
+});
+
+// ==========================================================================
+// Part E — rejecting KV put does not break the response; failure is logged
+// ==========================================================================
+console.log('\n== Part E: rejecting KV put (response intact, failure logged) ==\n');
+
+await t('E1 rejecting KV_LOG.put does not break the response; failure NAME+msg logged', async () => {
+  // A KV_LOG whose put REJECTS. The chat response must still 200 with deltas.
+  const rejectKV = {
+    put: (k, v, o) => { return Promise.reject(new Error('KV quota exceeded')); },
+    get: async (k) => null,
+  };
+  const env = { ...freshLimiterEnv(), KV_LOG: rejectKV, KV_FORCE_OK_WRITE: '1' };
+  const errors = [];
+  const origErr = console.error;
+  console.error = (...a) => { errors.push(a.join(' ')); };
+  let txt = '';
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), env);
+    assert(r.status === 200, 'response still 200 despite KV put rejection (got ' + r.status + ')');
+    txt = await r.text();
+  } finally {
+    console.error = origErr;
+  }
+  // the answer still streams through (deltas + done) — logging failure must NOT
+  // break chat.
+  assert(txt.includes('event: done'), 'done event present despite KV failures');
+  // the rejection was OBSERVED: a console.error with NAME + message (E).
+  const kvErr = errors.find((e) => /KV put failed/.test(e));
+  assert(kvErr, 'a "[chat] KV put failed" log line was emitted');
+  // error NAME + message appear; key/value content does not.
+  assert(/Error/.test(kvErr), 'error NAME present');
+  assert(/KV quota exceeded/.test(kvErr), 'error message present');
+});
+
+// ==========================================================================
+// Item 0 — KV write reduction (3 tests + max-writes-per-request report)
+// ==========================================================================
+console.log('\n== Item 0: KV write reduction (3 tests + max-writes report) ==\n');
+
+// Deterministic model mocks (self-contained; some earlier tests override
+// globalThis.fetch and do not restore it, so we always install our own).
+// SSE bodies are built with String.fromCharCode(10) (LF) to avoid any
+// backslash-escape ambiguity in the source literal.
+const LF = String.fromCharCode(10);
+const okFetch = async (url) => {
+  const u = String(url);
+  if (u.includes('generativelanguage.googleapis.com')) {
+    const payload = 'data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+    return new Response(payload + LF + LF, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }
+  if (u.includes('challenges.cloudflare.com')) {
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('not mocked', { status: 599 });
+};
+const err404Fetch = async (url) => {
+  const u = String(url);
+  if (u.includes('generativelanguage.googleapis.com')) {
+    return new Response(JSON.stringify({ error: { message: 'model not found' } }), { status: 404, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('challenges.cloudflare.com')) {
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('not mocked', { status: 599 });
+};
+const KVQ = 'What does AppoSight do?'; // brand/social -> model ok; NOT buying
+const KVBODY = { messages: [{ role: 'user', content: KVQ }], cf_turnstile_response: 'tok' };
+
+await t('KV1 ok (non-buying, sampled-in): AT MOST 1 KV key, and it is t_ (no q_)', async () => {
+  const prev = globalThis.fetch; globalThis.fetch = okFetch;
+  try {
+    const kv = makeKV();
+    const env = { ...freshLimiterEnv(), KV_LOG: kv, KV_FORCE_OK_WRITE: '1' }; // pin the write slot
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: KVBODY, origin: 'https://apposight.com' }), env);
+    const txt = await r.text();
+    assert(txt.includes('event: done'), 'done event present');
+    const keys = [...kv.m.keys()];
+    assert(keys.length <= 1, 'an ok request writes at most 1 KV key (got ' + keys.length + '): ' + keys.join(','));
+    assert(keys.filter((k) => k.startsWith('q_')).length === 0, 'no q_ key on a plain ok non-buying request');
+    if (keys.length === 1) assert(keys[0].startsWith('t_'), 'the single key is a t_ timing key (got ' + (keys[0] || '').split('_')[0] + ')');
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('KV2 non-ok (model 404): t_ ALWAYS written + m_ + q_ (non-ok rule)', async () => {
+  const prev = globalThis.fetch; globalThis.fetch = err404Fetch;
+  try {
+    const kv = makeKV();
+    const env = { ...freshLimiterEnv(), KV_LOG: kv };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: KVBODY, origin: 'https://apposight.com' }), env);
+    const txt = await r.text();
+    assert(/event:\s*error/m.test(txt), 'an SSE error event was emitted');
+    const tlogs = [...kv.m.keys()].filter((k) => k.startsWith('t_'));
+    const m404 = [...kv.m.keys()].filter((k) => k.startsWith('m_model_404_'));
+    const qlogs = [...kv.m.keys()].filter((k) => k.startsWith('q_'));
+    assert(tlogs.length === 1, 'exactly one t_ timing log on non-ok (got ' + tlogs.length + ')');
+    const rec = JSON.parse(kv.m.get(tlogs[0]));
+    assert(rec.outcome === 'error' || rec.outcome === 'timeout', 't_ outcome is error/timeout (got ' + rec.outcome + ')');
+    assert(m404.length === 1, 'm_model_404_ written (got ' + m404.length + ')');
+    assert(qlogs.length === 1, 'q_ question preserved on non-ok (got ' + qlogs.length + ')');
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('KV3 deterministic 1-in-4 sampling: 8 ok requests -> EXACTLY 2 t_ writes, no q_', async () => {
+  const prev = globalThis.fetch; globalThis.fetch = okFetch;
+  try {
+    const kv = makeKV();
+    const env = { ...freshLimiterEnv(), KV_LOG: kv }; // NO KV_FORCE_OK_WRITE -> natural sampling
+    for (let i = 0; i < 8; i++) {
+      const r = await worker.fetch(req('/api/chat', { method: 'POST', body: KVBODY, origin: 'https://apposight.com' }), env);
+      await r.text();
+    }
+    const tlogs = [...kv.m.keys()].filter((k) => k.startsWith('t_'));
+    const qlogs = [...kv.m.keys()].filter((k) => k.startsWith('q_'));
+    // Phase-invariant: the counter is monotonic, so any 8 CONSECUTIVE counter
+    // values contain exactly two values ≡ 0 (mod 4) -> exactly 2 writes,
+    // regardless of the counter's starting value (8 is a multiple of 4).
+    assert(tlogs.length === 2, 'exactly 2 t_ writes in 8 ok requests (1-in-4) (got ' + tlogs.length + ')');
+    assert(qlogs.length === 0, 'no q_ keys on plain ok (got ' + qlogs.length + ')');
+  } finally { globalThis.fetch = prev; }
+});
+
+// ---- Item 0: MAX KV WRITES PER /api/chat REQUEST (report) ----
+console.log('\n== Item 0: MAX KV WRITES PER REQUEST ==');
+console.log('  success (non-buying)          : 1 (sampled-in t_)  /  0 (sampled-out)');
+console.log('  success + buying-intent       : 2 (t_ + q_)');
+console.log('  retry-then-fail (non-ok + m_) : 3 (t_ + m_ + q_)   <- worst case');
+console.log('  non-ok without m_ (relay err) : 2 (t_ + q_)');
+console.log('  turnstile-fail (pre-stream)   : + m_turnstile_ (NOT in chat path)');
+console.log('  => worst case per /api/chat   : 3 KV writes');
 
 console.log(`\n== RESULT: ${pass} passed, ${fail} failed ==\n`);
 process.exit(fail ? 1 : 0);

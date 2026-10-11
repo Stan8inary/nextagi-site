@@ -203,6 +203,62 @@ export const THRESHOLD = 1.0;
 export const BASE_CONTEXT_CHARS =
   1200 + INDEX.reduce((a, p) => a + p.title.length + p.url.length + p.summary.length, 0);
 
+// Part D: brand / social mode ("who are you", "what does AppoSight do") must
+// ground the model on the HOME service areas, not just the hero + about.
+// Build clean excerpts (heading + lead prose only) for the home hero, every
+// home service-area heading, and the about page. The demo/transcript content
+// that follows the lead prose in the "AI Penetration Testing" chunk (a fake
+// `target.com`, port lists, a CVE id) is EXAMPLE DATA and must never reach the
+// model, so each excerpt is cut at the first transcript sentinel and trimmed
+// to a lead sentence. Total is capped to ~3000 chars. Returns synthetic chunk
+// objects (heading/title/url/text) so buildSystemPrompt renders them exactly
+// like retrieved chunks.
+const BRAND_SERVICE_DROP = /Let's build the future together|Explore|Connect$/;
+const BRAND_SENTINELS = [
+  'agent@', 'ai-pentest-agent', '--target', '--scan', '--ports', '--chain',
+  '[+]', '[✓]', 'CVE-', 'Scanning', 'Open ports', 'SSH key', 'Lateral movement',
+  'Privilege escalation', 'Assessment complete', 'OpenSSH', 'Apache ', 'Nginx',
+  'Tomcat', 'MySQL ', '8.0.32', 'Explore Connect',
+];
+function brandCleanLead(text, cap = 150) {
+  let t = String(text || '').replace(/\s+/g, ' ').trim();
+  let cut = Infinity;
+  for (const s of BRAND_SENTINELS) { const i = t.indexOf(s); if (i > 0 && i < cut) cut = i; }
+  let head = t.slice(0, cut).trim();
+  head = head.replace(/[ \t]*[🧠🤖⚡🔊📊🔒📋🔍💥]+$/, '').trim();
+  if (head.length > cap) head = head.slice(0, cap).replace(/\s+\S*$/, '') + '…';
+  return head;
+}
+export const BRAND_CAP_CHARS = 3000;
+export function brandExcerpts() {
+  const home = CHUNKS.filter((c) => c.url === '/');
+  const hero = home.find((c) => c.heading === 'Intelligence, Reimagined.') || home[0];
+  const service = home.filter((c) => !BRAND_SERVICE_DROP.test(c.heading) && c !== hero);
+  const about = CHUNKS.find((c) => c.url === '/about');
+  const src = [hero, ...service, about].filter(Boolean);
+  const out = [];
+  let total = 0;
+  for (const c of src) {
+    const head = brandCleanLead(c.text);
+    if (!head) continue;
+    // Source chunk text is "## <heading> <lead prose>". The renderer ALSO
+    // prints the heading in brackets, so keep the PROSE only: strip the leading
+    // "## " marker and the repeated heading (exact match, no regex guessing).
+    let prose = head.replace(/^##\s*/, '').trim();
+    const heading = c.heading;
+    if (prose.startsWith(heading)) prose = prose.slice(heading.length).trim();
+    if (!prose) prose = heading;
+    total += (heading + ' ' + prose).length;
+    out.push({ url: c.url, title: c.title, heading, text: prose, brand: true });
+    if (total >= BRAND_CAP_CHARS) break;
+  }
+  return {
+    chunks: out,
+    chars: total,
+    tokenEstimate: Math.round(total / 4),
+    headings: out.map((c) => c.heading),
+  };
+}
 export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   const qTerms = [...new Set(tokens(query))];
   const ranked = CHUNKS
@@ -240,11 +296,13 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
       chars += r.ch.text.length;
     }
   } else if (mode === 'social' && !isBuying(query)) {
-    // Brand / smalltalk ("who are you", "what does AppoSight do"): give the
-    // model the HOME + ABOUT pages (first content chunk of each) so it can
-    // describe AppoSight accurately, instead of guessing from the index alone.
-    pushIf(CHUNKS.find((c) => c.url === '/'));
-    pushIf(CHUNKS.find((c) => c.url === '/about'));
+    // Brand / smalltalk ("who are you", "what does AppoSight do"): ground the
+    // model on the HOME service areas + hero + about (Part D) so it describes
+    // AppoSight accurately, instead of guessing from the index alone. The demo
+    // transcript content in the "AI Penetration Testing" chunk is example data
+    // and is stripped by brandExcerpts (see brandCleanLead).
+    const brand = brandExcerpts();
+    for (const ch of brand.chunks) pushIf(ch);
   }
 
   // Item 3 (use-case listing): ALWAYS include the /Use-Cases listing chunk

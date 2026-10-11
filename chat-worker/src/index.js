@@ -246,7 +246,7 @@ async function callModel({ model, apiKey, systemPrompt, messages, timeoutMs = 20
       role: ROLE_MAP[m.role] || 'user',
       parts: [{ text: m.content }],
     })),
-    generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+    generationConfig: { temperature: 0.4, maxOutputTokens: 1536 },
   };
   if (thinkingConfig) body.generationConfig.thinkingConfig = thinkingConfig;
   const res = await fetch(url, {
@@ -306,6 +306,11 @@ async function verifyTurnstile(token, env) {
 // drops once the response is done). In unit tests `ctx` is undefined, so we
 // fall back to a direct put, keeping KV assertions deterministic. Never
 // throws: logging must never break chat.
+// E: write-failure observability. A per-isolate counter tallies rejected
+// puts so the tail log shows a running total WITHOUT us leaking key names or
+// values. (Deliberately NOT a named export — a Workers entrypoint should
+// export only `default` + DO classes, so the count rides on the log line.)
+let kvWriteFailures = 0;
 function kvPut(env, ctx, key, value, opts) {
   try {
     if (!env || !env.KV_LOG) return;
@@ -318,13 +323,32 @@ function kvPut(env, ctx, key, value, opts) {
     // fire-and-forget for latency); we only need to SEE the failure.
     if (p && typeof p.catch === 'function') {
       p.catch((e) => {
-        try { console.error('[chat] KV put failed', prefix, (e && e.message) || String(e)); } catch { /* swallow */ }
+        try {
+          kvWriteFailures += 1;
+          // Log ONLY the error NAME + message (E) — NEVER the key, key prefix,
+          // or value: those would leak question text / briefing content.
+          const name = (e && e.name) || 'Error';
+          const msg = (e && e.message) || String(e);
+          console.error('[chat] KV put failed', prefix, name + ':', msg, '(total failures this isolate:', kvWriteFailures + ')');
+        } catch { /* swallow */ }
       });
     }
     if (ctx && typeof ctx.waitUntil === 'function') {
       try { ctx.waitUntil(p); } catch { /* waitUntil reject — already guarded by put above */ }
     }
   } catch { /* logging must never break chat */ }
+}
+
+// Item 0 (KV write reduction): deterministic 1-in-4 sampler for ok-path t_
+// writes. Module-level monotonic counter — NOT Math.random (no hook, and the
+// design requires determinism under tests). Deliberately NOT a named export —
+// a Workers entrypoint may only export `default` + DO classes. Test-only hook:
+// env.KV_FORCE_OK_WRITE==='1' forces a write (pins the write slot) without any
+// public export — sanctioned by the Item 0 design ("use a test-only env var").
+let kvOkWriteCounter = 0;
+function kvOkSampleWrite(env) {
+  if (env && env.KV_FORCE_OK_WRITE === '1') return true;
+  return (kvOkWriteCounter++ & 3) === 0;
 }
 
 // Operator log for Turnstile verifications that FAILED. Records ONLY the
@@ -645,6 +669,9 @@ async function handleChat(request, env, ctx) {
       let accFull = '';
       let sentLen = 0;
       let modelAttempts = 0; // how many model attempts were made (for the t_ log)
+      // Item 0: `query` must be reachable from logOutcome (defined in this scope)
+      // for the non-ok q_ write. Declared here; assigned after retrieval (below).
+      let query = '';
 
       const send = (event, data) => {
         if (closed) return;
@@ -657,8 +684,19 @@ async function handleChat(request, env, ctx) {
         try { if (readerRef && readerRef.cancel) readerRef.cancel().catch(() => {}); } catch { /* ignore */ }
         try { controller.close(); } catch { /* ignore */ }
       };
-      const logOutcome = (outcome, error_code, attempt) =>
-        logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code, attempt }, env, ctx);
+      // Item 0 (KV write reduction): outcome-aware KV writes.
+      //   ok      -> t_ ONLY, SAMPLED 1-in-4 (kvOkSampleWrite). No q_ (plain ok).
+      //   non-ok  -> t_ ALWAYS + q_ (preserve question text for lead follow-up).
+      // m_ is written at the model-issue call sites (logModelIssue) — unchanged.
+      // Buying-intent ok requests write q_ at the ok relay site (lead capture).
+      const logOutcome = (outcome, error_code, attempt) => {
+        if (outcome === 'ok' ? kvOkSampleWrite(env) : true) {
+          logTiming({ ttfb_ms: ttfbMs, total_ms: elapsedMs(requestStart), finish_reason: finishReason, outcome, error_code, attempt }, env, ctx);
+        }
+        if (outcome !== 'ok') {
+          logQuestion(query, env, ctx); // non-ok: preserve question text
+        }
+      };
       const sendTimeoutError = (attempt) => {
         send('error', JSON.stringify({
           error: 'timeout',
@@ -684,7 +722,7 @@ async function handleChat(request, env, ctx) {
 
       try {
         // --- Retrieval (deterministic, no network) ---
-        const query = buildQuery(messages);
+        query = buildQuery(messages);
         let retr = retrieve(query);
         let buyingOffer = retr.mode !== 'grounded' && isBuying(query);
 
@@ -764,8 +802,10 @@ async function handleChat(request, env, ctx) {
           return;
         }
 
-        // --- Log the question (no IP, no email) with 30-day TTL ---
-        logQuestion(query, env, ctx); // fire-and-forget
+        // Item 0: the main-path q_ write is REMOVED here. q_ is now written only
+        // for (a) non-ok outcomes (inside logOutcome) or (b) buying-intent ok
+        // requests (at the ok relay site below). A plain ok non-buying request
+        // writes at most one SAMPLED t_ key — no question text.
         stage('retrieval_done');
 
         // --- Call the model (streaming), with ONE retry (item 6) ---
@@ -915,6 +955,16 @@ async function handleChat(request, env, ctx) {
             }
             buffer = '';
           }
+          // MAX_TOKENS: the answer hit the output limit and was truncated.
+          // Instead of a silent cut, append a short continuation note (B).
+          if (finishReason === 'MAX_TOKENS') {
+            accFull += '\n\n(answer cut off, ask me to continue)';
+            const safe = safePrefix(stripInlineRefs(accFull));
+            if (safe.length > sentLen) {
+              send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
+              sentLen = safe.length;
+            }
+          }
           send('done', JSON.stringify({
             mode: retrResolved.mode,
             sources: retrResolved.sources,
@@ -925,6 +975,7 @@ async function handleChat(request, env, ctx) {
           }));
           stage('stream_done');
           closeOut(reader);
+          if (buyingOffer) logQuestion(query, env, ctx); // Item 0: buying-intent ok -> preserve question (lead capture)
           logOutcome('ok', null, modelAttempts);
         } catch (e) {
           const isTimeout = e && (e.message === '__overall_timeout__' || e.message === '__idle_timeout__');

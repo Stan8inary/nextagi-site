@@ -5,4 +5,4 @@ node_modules/
 .turnstile-prod-keys
 smoke-results.json
 flood-results.json
-checkpoint-chatbot.md
+checkpoint-*.md
