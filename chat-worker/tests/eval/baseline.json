@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-24T15:26:54.257Z",
+  "generated": "2026-10-24T15:37:13.939Z",
   "threshold": 1,
   "counts": {
     "total": 40,
@@ -8,31 +8,32 @@
   },
   "effective": {
     "top1": {
-      "hits": 23,
-      "of": 32,
-      "pct": 71.9
-    },
-    "top5": {
-      "hits": 29,
-      "of": 32,
-      "pct": 90.6
-    }
-  },
-  "rank": {
-    "top1": {
       "hits": 21,
       "of": 32,
       "pct": 65.6
     },
     "top5": {
-      "hits": 26,
+      "hits": 28,
       "of": 32,
-      "pct": 81.3
+      "pct": 87.5
+    }
+  },
+  "rank": {
+    "top1": {
+      "hits": 19,
+      "of": 32,
+      "pct": 59.4
+    },
+    "top5": {
+      "hits": 25,
+      "of": 32,
+      "pct": 78.1
     }
   },
   "misses": [
     "T6",
-    "F7",
+    "F2",
+    "F4",
     "Y5"
   ],
   "rejection": {
@@ -560,28 +561,27 @@
     {
       "id": "F2",
       "cat": "followup",
-      "query": "What about the offboarding side?",
+      "query": "Which ones failed?",
       "mode": "grounded",
-      "topScore": 10.32,
+      "topScore": 14.21,
       "src": [
-        "/use-cases/ad-onboarding",
         "/use-cases/dc-upgrade"
       ],
-      "top1": "/use-cases/ad-onboarding",
+      "top1": "/use-cases/dc-upgrade",
       "top5": [
-        "/use-cases/ad-onboarding",
-        "/use-cases/ad-onboarding",
         "/use-cases/dc-upgrade",
-        "/Use-Cases",
-        "/use-cases/ad-onboarding"
+        "/use-cases/dc-upgrade",
+        "/use-cases/dc-upgrade",
+        "/use-cases/aks-employee-portal",
+        "/use-cases/dc-upgrade"
       ],
       "expect": [
-        "/use-cases/ad-onboarding"
+        "/use-cases/entra-cis-v2"
       ],
-      "eff_top1": true,
-      "eff_top5": true,
-      "rank_top1": true,
-      "rank_top5": true
+      "eff_top1": null,
+      "eff_top5": null,
+      "rank_top1": null,
+      "rank_top5": null
     },
     {
       "id": "F3",
@@ -611,55 +611,23 @@
     {
       "id": "F4",
       "cat": "followup",
-      "query": "Which findings were MFA-related?",
-      "mode": "grounded",
-      "topScore": 14.88,
-      "src": [
-        "/use-cases/entra-cis-v2"
-      ],
-      "top1": "/use-cases/entra-cis-v2",
-      "top5": [
-        "/use-cases/entra-cis-v2",
-        "/use-cases/entra-cis-v2",
-        "/use-cases/entra-cis-v2",
-        "/use-cases/ad-onboarding",
+      "query": "And who is the founder?",
+      "mode": "canned",
+      "topScore": 0,
+      "src": [],
+      "top1": null,
+      "top5": [],
+      "expect": [
+        "/about",
         "/"
       ],
-      "expect": [
-        "/use-cases/entra-cis-v2"
-      ],
-      "eff_top1": true,
-      "eff_top5": true,
-      "rank_top1": true,
-      "rank_top5": true
+      "eff_top1": null,
+      "eff_top5": null,
+      "rank_top1": null,
+      "rank_top5": null
     },
     {
       "id": "F5",
-      "cat": "followup",
-      "query": "What was the hardest fault you hit?",
-      "mode": "grounded",
-      "topScore": 23.31,
-      "src": [
-        "/use-cases/dc-azure-deployment"
-      ],
-      "top1": "/use-cases/dc-azure-deployment",
-      "top5": [
-        "/use-cases/dc-azure-deployment",
-        "/use-cases/dc-azure-deployment",
-        "/use-cases/dc-azure-deployment",
-        "/use-cases/ad-onboarding",
-        "/use-cases/ad-onboarding"
-      ],
-      "expect": [
-        "/use-cases/dc-azure-deployment"
-      ],
-      "eff_top1": true,
-      "eff_top5": true,
-      "rank_top1": true,
-      "rank_top5": true
-    },
-    {
-      "id": "F6",
       "cat": "followup",
       "query": "Tell me about the event-driven Azure AD sync. Which events does it monitor?",
       "mode": "grounded",
@@ -686,25 +654,31 @@
       "rank_top5": true
     },
     {
-      "id": "F7",
+      "id": "F6",
       "cat": "followup",
-      "query": "And who is the founder?",
-      "mode": "canned",
-      "topScore": 0,
-      "src": [],
-      "top1": null,
-      "top5": [],
+      "query": "What about the faults?",
+      "mode": "grounded",
+      "topScore": 4.73,
+      "src": [
+        "/Use-Cases",
+        "/use-cases/dc-azure-deployment"
+      ],
+      "top1": "/Use-Cases",
+      "top5": [
+        "/Use-Cases",
+        "/use-cases/dc-azure-deployment",
+        "/use-cases/dc-azure-deployment"
+      ],
       "expect": [
-        "/about",
-        "/"
+        "/use-cases/dc-azure-deployment"
       ],
       "eff_top1": null,
-      "eff_top5": null,
+      "eff_top5": true,
       "rank_top1": null,
-      "rank_top5": null
+      "rank_top5": true
     },
     {
-      "id": "F8",
+      "id": "F7",
       "cat": "followup",
       "query": "What about the weak crypto finding?",
       "mode": "grounded",
@@ -723,6 +697,32 @@
       ],
       "expect": [
         "/use-cases/dc-azure-security"
+      ],
+      "eff_top1": true,
+      "eff_top5": true,
+      "rank_top1": true,
+      "rank_top5": true
+    },
+    {
+      "id": "F8",
+      "cat": "followup",
+      "query": "What about the offboarding side?",
+      "mode": "grounded",
+      "topScore": 10.32,
+      "src": [
+        "/use-cases/ad-onboarding",
+        "/use-cases/dc-upgrade"
+      ],
+      "top1": "/use-cases/ad-onboarding",
+      "top5": [
+        "/use-cases/ad-onboarding",
+        "/use-cases/ad-onboarding",
+        "/use-cases/dc-upgrade",
+        "/Use-Cases",
+        "/use-cases/ad-onboarding"
+      ],
+      "expect": [
+        "/use-cases/ad-onboarding"
       ],
       "eff_top1": true,
       "eff_top5": true,
