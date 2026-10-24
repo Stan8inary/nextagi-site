@@ -20,6 +20,32 @@
  * Run:  node tests.js
  */
 'use strict';
+import { registerHooks } from 'node:module';
+
+// ---- Node harness shim for the workerd-local `cloudflare:workers` module ----
+// limiter.js statically imports { DurableObject } from 'cloudflare:workers'
+// (a Workers-local module). In this plain-Node harness the worker's limiter
+// is REPLACED by an in-memory stand-in (env.Limiter below / makeLimiter), so
+// the DO base class only needs to EXIST for the import to resolve.
+// registerHooks is synchronous (Node >=22.15) — no worker_threads loader.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === 'cloudflare:workers') {
+      return { url: 'cloudflare-workers-stub:', shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url === 'cloudflare-workers-stub:') {
+      return {
+        format: 'module',
+        source: 'export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }\n',
+        shortCircuit: true,
+      };
+    }
+    return nextLoad(url, context);
+  },
+});
 
 // ---- in-memory stand-ins -------------------------------------------------
 const kv = new Map();
@@ -3048,6 +3074,178 @@ await t('KV3 deterministic 1-in-4 sampling: 8 ok requests -> EXACTLY 2 t_ writes
     assert(tlogs.length === 2, 'exactly 2 t_ writes in 8 ok requests (1-in-4) (got ' + tlogs.length + ')');
     assert(qlogs.length === 0, 'no q_ keys on plain ok (got ' + qlogs.length + ')');
   } finally { globalThis.fetch = prev; }
+});
+
+// ---- SUB: deterministic briefing-subscribe flow (no model call) ----------
+console.log('\n== Chat worker briefing-subscribe flow (SUB) ==\n');
+
+const SUB_ASK_TEXT_EXPECT = 'What email address should the daily briefing go to?';
+async function sseDeltaText(r) {
+  const txt = await r.text();
+  const m = txt.match(/event: delta\ndata: (.*)/);
+  if (!m) return '';
+  try { return (JSON.parse(m[1]).text || ''); } catch { return ''; }
+}
+
+await t('SUB1 subscribe intent -> asks for email (no model, no relay)', async () => {
+  const prev = globalThis.fetch;
+  const relayed = [];
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('subscribe.test')) { relayed.push(u); return new Response(JSON.stringify({ ok: true }), { status: 200 }); }
+    if (u.includes('generativelanguage.googleapis.com')) throw new Error('model must NOT be called for subscribe intent');
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const env = { ...ENV_BASE, SUBSCRIBE_API_URL: 'https://subscribe.test/api/subscribe' };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [{ role: 'user', content: 'subscribe me to the daily briefing' }],
+      cf_turnstile_response: 'tok',
+    } }), env);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    const text = await sseDeltaText(r);
+    assert(text.includes(SUB_ASK_TEXT_EXPECT), 'ask text present: ' + text);
+    assert(relayed.length === 0, 'no subscribe relay yet');
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB2 unsubscribe -> email-link answer (no model, no relay)', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) throw new Error('model must NOT be called for unsubscribe');
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [{ role: 'user', content: 'how do I unsubscribe from the briefing?' }],
+      cf_turnstile_response: 'tok',
+    } }), ENV_BASE);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    const text = await sseDeltaText(r);
+    assert(/unsubscribe link at the bottom/i.test(text), 'points to email unsubscribe link: ' + text);
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB3 email after ask -> relayed to main worker, success reply', async () => {
+  const prev = globalThis.fetch;
+  let relayBody = null;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('subscribe.test')) { relayBody = JSON.parse(opts.body); return new Response(JSON.stringify({ ok: true, message: 'Confirmation sent' }), { status: 200 }); }
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const env = { ...ENV_BASE, SUBSCRIBE_API_URL: 'https://subscribe.test/api/subscribe' };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [
+        { role: 'user', content: 'subscribe me to the daily briefing' },
+        { role: 'assistant', content: 'Of course. ' + SUB_ASK_TEXT_EXPECT + ' I\'ll send you a one-time confirmation link — you stay in full control and can unsubscribe anytime.' },
+        { role: 'user', content: 'stan@testing.io' },
+      ],
+      cf_turnstile_response: 'tok',
+    } }), env);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    assert(relayBody && relayBody.email === 'stan@testing.io', 'relay body: ' + JSON.stringify(relayBody));
+    const text = await sseDeltaText(r);
+    assert(/confirmation link is on its way to stan@testing\.io/i.test(text), 'success reply: ' + text);
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB4 email after ask + relay failure -> fallback to briefings page', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('subscribe.test')) return new Response(JSON.stringify({ ok: false, error: 'email_rejected' }), { status: 400 });
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const env = { ...ENV_BASE, SUBSCRIBE_API_URL: 'https://subscribe.test/api/subscribe' };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [
+        { role: 'user', content: 'subscribe me' },
+        { role: 'assistant', content: SUB_ASK_TEXT_EXPECT },
+        { role: 'user', content: 'stan@testing.io' },
+      ],
+      cf_turnstile_response: 'tok',
+    } }), env);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    const text = await sseDeltaText(r);
+    assert(/briefings page/.test(text) && /apposight\.com/.test(text), 'fallback reply: ' + text);
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB5 relay network error -> graceful fallback, no throw', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('subscribe.test')) throw new Error('network down');
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const env = { ...ENV_BASE, SUBSCRIBE_API_URL: 'https://subscribe.test/api/subscribe' };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [
+        { role: 'user', content: 'subscribe me' },
+        { role: 'assistant', content: SUB_ASK_TEXT_EXPECT },
+        { role: 'user', content: 'stan@testing.io' },
+      ],
+      cf_turnstile_response: 'tok',
+    } }), env);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    const text = await sseDeltaText(r);
+    assert(/briefings page/.test(text), 'fallback reply: ' + text);
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB6 bare email WITHOUT the ask -> normal model path, no relay', async () => {
+  const prev = globalThis.fetch;
+  const relayed = [];
+  const sseStream = (events) => {
+    const enc = new TextEncoder();
+    const payload = events.map((e) => 'event: ' + e.event + '\ndata: ' + e.data + '\n\n').join('');
+    return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(payload)); c.close(); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('subscribe.test')) { relayed.push(u); return new Response(JSON.stringify({ ok: true }), { status: 200 }); }
+    if (u.includes('generativelanguage.googleapis.com')) {
+      lastModel = { url: u, headers: opts.headers, body: null };
+      return sseStream([
+        { event: 'start', data: '{}' },
+        { event: 'delta', data: JSON.stringify({ text: 'AppoSight builds ' }) },
+        { event: 'done', data: JSON.stringify({ finishReason: 'STOP' }) },
+      ]);
+    }
+    if (u.includes('challenges.cloudflare.com')) return new Response(JSON.stringify({ success: true }), { status: 200 });
+    return prev(url, opts);
+  };
+  try {
+    const env = { ...ENV_BASE, SUBSCRIBE_API_URL: 'https://subscribe.test/api/subscribe' };
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+      messages: [{ role: 'user', content: 'my email is stan@testing.io' }],
+      cf_turnstile_response: 'tok',
+    } }), env);
+    assert(r.status === 200, 'expected 200 got ' + r.status);
+    assert(relayed.length === 0, 'no relay without the ask marker');
+    assert(lastModel !== null, 'model path taken');
+  } finally { globalThis.fetch = prev; }
+});
+
+await t('SUB7 "email me the daily briefing" phrasing -> intent fires', async () => {
+  const r = await worker.fetch(req('/api/chat', { method: 'POST', origin: 'https://apposight.com', body: {
+    messages: [{ role: 'user', content: 'can you email me the daily briefing?' }],
+    cf_turnstile_response: 'tok',
+  } }), ENV_BASE);
+  assert(r.status === 200, 'expected 200 got ' + r.status);
+  const text = await sseDeltaText(r);
+  assert(text.includes(SUB_ASK_TEXT_EXPECT), 'ask text present: ' + text);
+  assert(lastModel === null, 'no model call');
 });
 
 // ---- Item 0: MAX KV WRITES PER /api/chat REQUEST (report) ----

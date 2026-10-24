@@ -634,6 +634,75 @@ async function handleChat(request, env, ctx) {
     );
   }
 
+  // --- Deterministic briefing-subscribe flow (no model call) ---
+  // Stateless widget, so the two-step state is inferred from the history:
+  //   step 1 (intent) : last user msg matches subscribe intent (and is NOT
+  //                     unsubscribe) -> reply asking for the email, containing
+  //                     SUB_ASK_MARKER so step 2 can recognize it.
+  //   step 2 (capture): the assistant msg before the last user msg contains
+  //                     SUB_ASK_MARKER AND the last user msg is a valid email
+  //                     -> POST to the MAIN worker's /api/subscribe (KV store,
+  //                     Brevo confirm email and unsubscribe link all live
+  //                     there — single source of truth; the chat worker only
+  //                     relays the email).
+  //   unsubscribe     : answer from the email-link rule — no state, no action.
+  const SUB_ASK_MARKER = 'What email address should the daily briefing go to?';
+  const SUB_ASK_TEXT = 'Of course. ' + SUB_ASK_MARKER + ' I\'ll send you a one-time confirmation link — you stay in full control and can unsubscribe anytime.';
+  const SUB_UNSUB_TEXT = 'Sure. Every briefing email has an unsubscribe link at the bottom — click it and you\'re off the list right away.';
+  const SUB_OK_TEXT = (email) => 'Done — a confirmation link is on its way to ' + email + '. One click and the daily briefing is yours. Every email has an unsubscribe link at the bottom.';
+  const SUB_FAIL_TEXT = "That didn't work on my end. You can also subscribe directly on the briefings page: https://www.apposight.com/#briefings";
+  const SUB_EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+  const lastUserIdx = (() => { for (let i = messages.length - 1; i >= 0; i--) { if (messages[i].role === 'user') return i; } return -1; })();
+  const latestUserText = lastUserIdx >= 0 ? String(messages[lastUserIdx].content || '').trim() : '';
+  let prevAsstBeforeUser = '';
+  for (let i = lastUserIdx - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') { prevAsstBeforeUser = String(messages[i].content || ''); break; }
+  }
+  const isSubUnsub = /unsubscrib/i.test(latestUserText);
+  const isSubIntent = !isSubUnsub && (
+    /\bsubscri\w*\b/i.test(latestUserText) ||
+    /\bsign[- ]?up\b/i.test(latestUserText) ||
+    (/\b(daily|the|our)\s+briefing\b/i.test(latestUserText) && /\b(email|inbox)\b/i.test(latestUserText)) ||
+    (/\b(email me|send me|notify me|keep me (posted|updated))\b/i.test(latestUserText) && /\b(daily|briefing|update|news)\b/i.test(latestUserText))
+  );
+  const subSse = (text) => sseResponse({
+    events: [
+      { event: 'status', data: JSON.stringify({ ok: true, phase: 'working' }) },
+      { event: 'start', data: JSON.stringify({ ok: true }) },
+      { event: 'delta', data: JSON.stringify({ text: text }) },
+      { event: 'done', data: JSON.stringify({ subscribe: true }) },
+    ],
+    originHost,
+  });
+  if (isSubUnsub) {
+    stage('subscribe_unsub_reply');
+    return subSse(SUB_UNSUB_TEXT);
+  }
+  if (prevAsstBeforeUser.includes(SUB_ASK_MARKER) && SUB_EMAIL_RE.test(latestUserText) && latestUserText.length <= 254) {
+    stage('subscribe_capture');
+    let ok = false;
+    try {
+      const url = (env && env.SUBSCRIBE_API_URL) || 'https://www.apposight.com/api/subscribe';
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: latestUserText }),
+      });
+      const dd = await r.json().catch(() => ({}));
+      ok = !!(r.ok && dd && dd.ok);
+    } catch (e) {
+      stageErr('subscribe_relay', e);
+    }
+    if (ok) {
+      return subSse(SUB_OK_TEXT(latestUserText));
+    }
+    return subSse(SUB_FAIL_TEXT);
+  }
+  if (isSubIntent) {
+    stage('subscribe_ask');
+    return subSse(SUB_ASK_TEXT);
+  }
+
   // --- All JSON gates (origin/content-type/body-size/turnstile/rate-limit)
   // have passed. Item 5: return the SSE response IMMEDIATELY with an early
   // 'status' event so the client gets first bytes before any KV/model work.

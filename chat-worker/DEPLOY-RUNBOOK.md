@@ -2,9 +2,22 @@
 
 Account:  982fdf0a67691f5cc01d6918ce69da58
 Zone:     apposight.com  (www.apposight.com)
-Date:     2026-10-05
+Date:     2026-10-05  (header updated 2026-10-11)
 RULES:    preview before publish · verify live after · NEVER print secrets.
          This runbook is commands-only. Do NOT run it until you approve each step.
+
+PROJECT DOCS (full reference, this folder + docs/):
+  README.md · ARCHITECTURE.md · OPERATIONS.md · TROUBLESHOOTING.md
+  CHANGELOG.md · SECURITY.md   →   see ./docs/
+  This file stays the production deploy/rollback procedure.
+
+VERIFIED COMMANDS (confirmed against wrangler 4.92.0, 2026-10-11):
+  tests:        node --import ./test-cf-hook.mjs tests.js        # 156 passed, 0 failed
+  build:        node build_knowledge.js                          # regenerates src/knowledge.js + src/widget.js
+  deploy:       npx wrangler deploy
+  rollback:     npx wrangler rollback <version-id>              # use the VERSION id (not deployment id)
+  live list:    npx wrangler deployments list --json            # ASCENDING: last (newest) entry = live
+  whoami:       npx wrangler whoami
 
 AUTH: no token is stored in this file. Before any wrangler step, confirm the account:
   npx wrangler whoami   (run in STEP 0) — it must show the NextAGI account
@@ -16,7 +29,7 @@ STEP 0 — Preflight (read-only: tests, git log, whoami, KB checks — no state 
            The two main-worker commits it references were made separately; git log shows them.)
 ────────────────────────────────────────────────────────────────────────────────
   cd /home/nextagi/public_html/chat-worker
-  node --import ./test-cf-hook.mjs tests.js          # MUST be 87+ passed, 0 failed
+  node --import ./test-cf-hook.mjs tests.js          # MUST be 156 passed, 0 failed
   # BUILD STEP — required before tests AND deploy (regenerates src/widget.js from
   # chat-widget.js and src/knowledge.js from the main-worker page constants):
   #   node build_knowledge.js
