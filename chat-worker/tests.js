@@ -1881,6 +1881,53 @@ await t('TO5 retrieval follow-up: >=3 content tokens -> latest only (does NOT ca
   assert(q.includes('What ACR pull identity'), 'keeps the latest message');
 });
 
+await t('IMP1a short non-pro-form ambiguous follow-up -> carries prior key terms', async () => {
+  const msgs = [
+    { role: 'user', content: 'What did the Entra ID CIS audit v2 find?' },
+    { role: 'assistant', content: 'It verified the controls.' },
+    { role: 'user', content: 'Which ones failed?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q.startsWith('Which ones failed?'), 'keeps the latest message first, got: ' + q);
+  assert(/(entra|cis|audit|v2)/.test(q), 'appends prior key terms to disambiguate, got: ' + q);
+  const r = R.retrieve(q);
+  assert(r.top[0].url === '/use-cases/entra-cis-v2', 'entra-cis-v2 #1 via carry-over, got ' + r.top[0].url);
+});
+
+await t('IMP1b short non-pro-form "What about the faults?" -> dc-azure-deployment', async () => {
+  const msgs = [
+    { role: 'user', content: 'How did you deploy the domain controller to Azure with an AI agent?' },
+    { role: 'assistant', content: 'Step by step.' },
+    { role: 'user', content: 'What about the faults?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q.startsWith('What about the faults?'), 'keeps the latest message, got: ' + q);
+  const r = R.retrieve(q);
+  const rank = r.top.findIndex((x) => x.url === '/use-cases/dc-azure-deployment');
+  assert(rank >= 0 && rank < 3, 'dc-azure-deployment in top-3 via carry-over, got rank ' + (rank + 1 || 'absent'));
+});
+
+await t('IMP1c generic high-IDF word ("ones") does NOT suppress carry-over', async () => {
+  const msgs = [
+    { role: 'user', content: 'What did the Entra ID CIS audit v2 find?' },
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'Which ones failed?' },
+  ];
+  const q = R.buildQuery(msgs);
+  // "ones" scores high IDF in this small KB but is generic; carry-over must still happen.
+  assert(/(entra|cis|audit|v2)/.test(q), 'generic "ones" does not look like a distinctive anchor, got: ' + q);
+});
+
+await t('IMP1d distinctive single-token follow-up still stands alone (guard)', async () => {
+  const msgs = [
+    { role: 'user', content: 'Do you do AKS work?' },
+    { role: 'assistant', content: 'Yes.' },
+    { role: 'user', content: 'What is EntraSync?' },
+  ];
+  const q = R.buildQuery(msgs);
+  assert(q === 'What is EntraSync?', 'distinctive "EntraSync" -> latest only, got: ' + JSON.stringify(q));
+});
+
 await t('TO6 sources: grounded = distinct URLs of top-3 chunks sent to the model', async () => {
   const q = 'how long did the DC upgrade take';
   const rr = R.retrieve(q);

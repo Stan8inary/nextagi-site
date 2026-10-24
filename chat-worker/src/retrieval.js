@@ -386,33 +386,83 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// buildQuery (item 3): a follow-up that is a pro-form / anaphoric reference
-// ("how long did it take?", "what about this one?") must carry the previous
-// user message so the entity from the prior turn is preserved. A
-// self-contained follow-up that names its own entity ("What is EntraSync?",
-// "what ACR pull identity did AKS use?") must stand alone, or an off-topic
-// prior question ("Do you do AKS work?") will dominate retrieval.
+// buildQuery: build the RETRIEVAL query (never the model input) for a turn.
 //
-// Discriminator = presence of a 1st/2nd/3rd-person pronoun or a demonstrative
-// in the LATEST user message: those signal the answer depends on an earlier
-// turn. Entity-bearing questions have none, so they are never concatenated.
-// This keeps R11 ("How long did it take?" -> concat, AKS portal #1) working
-// while fixing the case where a fresh entity question was wrongly dragged
-// into the prior topic.
+// Three cases, in priority order:
+//   1. Pro-form / anaphoric latest ("how long did it take?", "what about this
+//      one?") -> carry the FULL previous user message so the prior turn's
+//      entity is preserved. (Pinned: R11, TO4.)
+//   2. Short, non-pro-form latest that names no distinctive term
+//      ("which ones failed?", "what about the faults?") -> the message is
+//      context-dependent, so append the previous user message's key terms
+//      (capped) to disambiguate. (IMP1.)
+//   3. Self-contained latest — either long, or it names a distinctive
+//      (high-IDF) term ("What is EntraSync?", "what ACR pull identity did
+//      AKS use?") -> use it alone, or an off-topic prior question ("Do you do
+//      AKS work?") would dominate retrieval. (Pinned: TO3, TO5.)
+//
+// The ORIGINAL user message is always what the model sees; buildQuery only
+// shapes retrieval, so the model still reads the exact follow-up the user sent.
+// A first-turn question (no prior user message) always returns itself.
 // ---------------------------------------------------------------------------
 const ANAPHORA = /\b(it|its|this|that|these|those|they|them)\b/i;
 export function isProForm(text) {
   return ANAPHORA.test(String(text || '').toLowerCase());
 }
+
+// A follow-up is "short / lacking a clear subject" when it has at most this
+// many content (non-stopword) tokens.
+const SHORT_MAX_TOKENS = 2;
+// A content term at/above this IDF is distinctive enough to anchor retrieval
+// on its own (it concentrates on one page). Below it, the term is spread
+// across pages and the follow-up needs the prior turn's context.
+const DISTINCTIVE_IDF = 5.0;
+// Common English words that can score high IDF in a small corpus yet are not
+// topical anchors. They never count as a "distinctive" term for the carry-over
+// gate — e.g. "ones" in "which ones failed?" should not make the question look
+// self-contained, even though it happens to be rare in this KB.
+const GENERIC = new Set([
+  'ones','side','way','ways','kind','kinds','sort','stuff','thing','things',
+  'bit','bits','lot','lots','part','parts','case','cases','time','times',
+  'day','days','group','groups','set','sets','item','items',
+]);
+// Cap on how many of the previous user message's key terms we append.
+const CARRY_MAX_TERMS = 6;
+
+// Distinctive, most informative content terms of `text`, ranked by IDF then
+// in-message frequency, capped at `cap`.
+function keyTerms(text, cap) {
+  const t = tokens(text);
+  if (!t.length) return [];
+  const freq = new Map();
+  for (const w of t) freq.set(w, (freq.get(w) || 0) + 1);
+  return [...new Set(t)]
+    .sort((a, b) =>
+      ((IDF.get(b) ?? 1) - (IDF.get(a) ?? 1)) ||
+      ((freq.get(b) ?? 0) - (freq.get(a) ?? 0)))
+    .slice(0, cap);
+}
+
 export function buildQuery(messages) {
   const users = (messages || [])
     .filter((m) => m && m.role === 'user' && typeof m.content === 'string');
   if (!users.length) return '';
   const latest = users[users.length - 1].content;
-  if (isProForm(latest) && users.length >= 2) {
-    return users[users.length - 2].content + ' ' + latest; // anaphoric -> carry prior turn
+  const prior = users.length >= 2 ? users[users.length - 2].content : '';
+  if (!prior) return latest; // first-turn question -> itself
+  if (isProForm(latest)) {
+    return prior + ' ' + latest; // anaphoric -> carry the full prior turn
   }
-  return latest; // self-contained (or first message) -> latest only
+  // IMP1: short, non-pro-form follow-up with no distinctive term -> append
+  // the previous user message's key terms (capped) to disambiguate.
+  const lt = tokens(latest);
+  const hasDistinctive = lt.some(
+    (w) => !GENERIC.has(w) && (IDF.get(w) ?? 1) >= DISTINCTIVE_IDF);
+  if (lt.length <= SHORT_MAX_TOKENS && !hasDistinctive) {
+    const add = keyTerms(prior, CARRY_MAX_TERMS).join(' ');
+    if (add) return latest + ' ' + add;
+  }
+  return latest; // self-contained -> stand alone
 }
 
 // ---------------------------------------------------------------------------
