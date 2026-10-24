@@ -1967,6 +1967,16 @@ await t('IMP2f "reteam" (one word) does NOT falsely match the "red team" phrase'
   assert(!/penetration testing/.test(e), 'word-boundary guard: no pentest anchors, got: ' + e);
 });
 
+await t('IMP2g brand question ("who are you ... do") -> social, NOT grounded on a use-case page', async () => {
+  // T6: "who are you" is a brand/social signal, but 'do'/'actually' can score
+  // above THRESHOLD on a use-case page. Brand intent must take precedence so
+  // the model is grounded on home+about, not leaked the wrong page.
+  const r = R.retrieve('Who are you, and what do you actually do?');
+  assert(r.mode === 'social', 'social mode (brand precedence), got ' + r.mode);
+  assert(r.chunks.some((c) => c.url === '/about'), '/about served in social context');
+  assert(r.chunks.some((c) => c.url === '/'), 'home served in social context');
+});
+
 await t('TO6 sources: grounded = distinct URLs of top-3 chunks sent to the model', async () => {
   const q = 'how long did the DC upgrade take';
   const rr = R.retrieve(q);

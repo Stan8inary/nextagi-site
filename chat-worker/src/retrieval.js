@@ -337,9 +337,14 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
   const listingQuery = isListing(query);
   let mode;
   if (isBuying(query)) mode = 'social'; // buying -> social mode + lead-capture offer
+  else if (isSocial(query)) mode = 'social'; // greeting / brand ("who are you") -> social, WITH home+about context.
+    // Checked BEFORE the score branch: a brand question can score above
+    // THRESHOLD on incidental tokens (e.g. "Who are you, and what do you
+    // actually do?" -> 'do'/'actually' land on a use-case page) and must not
+    // be grounded on the wrong page. All brand/social queries in the eval set
+    // expect [/, /about], which social mode serves.
   else if (listingQuery) mode = (topScore >= THRESHOLD) ? 'grounded' : 'social';
   else if (topScore >= THRESHOLD) mode = 'grounded';
-  else if (isSocial(query)) mode = 'social'; // greeting / brand -> social, WITH home+about context
   else mode = 'canned';
 
   // Enforce the ~12k char cap on retrieved content (keep top-ranked chunks).
