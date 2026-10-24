@@ -3495,6 +3495,72 @@ await t('IMP4f guard judges the LATEST turn only (carry-over cannot taint)', asy
   assert(rB.mode === 'canned', 'injection on the latest turn -> canned, got ' + rB.mode);
 });
 
+// ---- IMP6: Gemini 429 / quota handling ------------------------------------
+// Spec: NO retry on 429/quota; a friendly message WITH the contact-form link;
+// only the error code is logged (never the upstream body, which on 429 quota
+// errors can carry account/billing detail).
+// Behavior already existed in the worker (callModel cancels the upstream body
+// on non-OK and throws with the status; the retry guard is 5xx/timeout only;
+// the 429 branch logs kind+status, writes error_code, and sends the friendly
+// model_unavailable event with the contact link). This test pins all of it.
+await t('IMP6a Gemini 429/quota -> NO retry, friendly msg + contact link, code-only log', async () => {
+  let geminiCalls = 0;
+  const prev = globalThis.fetch;
+  const LEAK = 'QUOTA-SECRET-BODY-xyz789'; // stands in for any upstream body text
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      geminiCalls += 1;
+      // Real Gemini 429 responses carry an error body; the worker must never
+      // echo or log any of it.
+      return new Response(JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota exceeded ' + LEAK } }),
+        { status: 429, headers: { 'content-type': 'application/json' } });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  // Console capture: the stage error line must carry only the code.
+  const captured = [];
+  const origErr = console.error;
+  console.error = (...a) => { captured.push(a.join(' ')); origErr.apply(console, a); };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv };
+  let r;
+  try {
+    r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'How long did the DC upgrade take?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), env);
+    const txt = await r.text();
+    assert(r.status === 200, 'SSE 200 opened (not 504 JSON), got ' + r.status);
+    assert(geminiCalls === 1, 'exactly ONE model call — 429 is NOT retried (got ' + geminiCalls + ')');
+    assert(/event:\s*error/m.test(txt), 'SSE error event present');
+    const err = sseError(txt);
+    assert(err && err.error === 'model_unavailable', 'error=model_unavailable (got ' + (err && err.error) + ')');
+    assert(/contact form/i.test(err.message || ''), 'friendly message mentions the contact form (got: ' + (err && err.message) + ')');
+    assert(err.contact, 'contact path present in the error event');
+    assert(!txt.includes(LEAK), 'upstream body text never echoed to the client');
+    // KV m_ log: kind + status code ONLY.
+    const mlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('m_'));
+    assert(mlogs.length >= 1, 'an m_ model-issue log was written');
+    const mrec = JSON.parse(mlogs[mlogs.length - 1][1]);
+    assert(mrec.kind === 'model_error_429', 'kind=model_error_429 (got ' + mrec.kind + ')');
+    assert(mrec.status === 429, 'status=429 (got ' + mrec.status + ')');
+    assert(!JSON.stringify(mrec).includes(LEAK), 'm_ log contains only the error code, no upstream body');
+    // t_ log: error_code only, no question text.
+    const tlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('t_'));
+    const trec = tlogs.length ? JSON.parse(tlogs[tlogs.length - 1][1]) : null;
+    assert(trec, 'a t_ timing log was written');
+    assert(trec.error_code === 429, 't_ error_code=429 (got ' + JSON.stringify(trec) + ')');
+    assert(!JSON.stringify(trec).includes(LEAK), 't_ log has no upstream body');
+    // Console: the 429 stage line carries only the code, not the body.
+    assert(captured.some((l) => l.includes('model_error_429')), 'a model_error_429 console line was logged');
+    assert(!captured.join('\n').includes(LEAK), 'no upstream body text in console output');
+  } finally {
+    console.error = origErr;
+    globalThis.fetch = prev;
+  }
+});
+
 // ---- Item 0: MAX KV WRITES PER /api/chat REQUEST (report) ----
 console.log('\n== Item 0: MAX KV WRITES PER REQUEST ==');
 console.log('  success (non-buying)          : 1 (sampled-in t_)  /  0 (sampled-out)');
