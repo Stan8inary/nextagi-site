@@ -269,7 +269,15 @@ export const LOW_CONFIDENCE_PATTERNS = [
 
 export function isLowConfidence(query) {
   if (typeof query !== "string" || !query) return false;
-  return LOW_CONFIDENCE_PATTERNS.some((re) => re.test(query));
+  return LOW_CONFIDENCE_PATTERNS.some((re) => {
+    // Defensive statelessness: reset lastIndex before every test() so the
+    // guard is correct even if a future pattern gains a /g flag (a /g regex's
+    // lastIndex persists across .test() calls and can skip the start of a
+    // shorter string). All patterns are currently /i-only (verified), so this
+    // is a no-op today and a safety net tomorrow. Pinned by test REG1.
+    re.lastIndex = 0;
+    return re.test(query);
+  });
 }
 
 // Item 3 (use-case listing): a question that asks for OUR services / use cases
