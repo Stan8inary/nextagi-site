@@ -182,6 +182,67 @@ const LISTING_B = /\blist\b.*\b(your|our|apposight|services?|projects?|use ?case
 export function isListing(q) { const s = String(q || ''); return LISTING_A.test(s) || LISTING_B.test(s); }
 
 // ---------------------------------------------------------------------------
+// SYNONYMS (IMP2): a small static alias map. Each group lists the query
+// PHRASES visitors use (`match`); when the query contains any of them, the
+// group's ANCHORS — the site's own wording, which is what the KB is actually
+// written in — are appended to the query BEFORE scoring. Anchors are chosen
+// to be terms that genuinely occur in the KB, so they create real matches
+// rather than no-op tokens (e.g. "pen test" -> "penetration testing red team
+// pentest", all of which appear on the home page).
+//
+// Expansion is applied to RETRIEVAL terms only (inside retrieve()/rankAll()).
+// The intent detectors (isBuying/isListing/isSocial) and the model input all
+// still see the ORIGINAL message. The price/cost group is included so the map
+// documents the full alias set, but its anchors are intentionally empty: the
+// site has no pricing page and those phrases are handled by isBuying()
+// (lead-capture), not by retrieval.
+// ---------------------------------------------------------------------------
+const SYNONYMS = [
+  {
+    // Offensive-security wording. KB home page is written as "red team" /
+    // "penetration testing" / "pentest".
+    match: ['pen test', 'pen-test', 'penetration test', 'penetration testing',
+            'red teaming', 'red-team', 'offensive security', 'pentesting',
+            'security testing', 'offensive'],
+    anchors: ['penetration testing', 'red team', 'pentest'],
+  },
+  {
+    // LLM fine-tuning. KB home page: "fine-tuning", "LoRA", "LLM".
+    match: ['finetune', 'fine-tune', 'fine tune', 'fine-tuning', 'fine tuning',
+            'lora fine-tune', 'llm fine-tune', 'tune a model', 'model fine-tune'],
+    anchors: ['fine-tuning', 'lora', 'llm'],
+  },
+  {
+    // Founder. /about is written as "Stanley Zheng"; the word "founder" is
+    // not in the KB at all.
+    match: ['founder', 'founders', 'who is the founder', 'who founded',
+            'founder of'],
+    anchors: ['stanley zheng'],
+  },
+  {
+    // Price / cost / quote — a lead-capture intent, NOT a retrieval target
+    // (the site has no pricing page). Anchors empty on purpose; isBuying()
+    // handles these.
+    match: ['price', 'pricing', 'cost', 'quote', 'how much'],
+    anchors: [],
+  },
+];
+function _phraseRe(phrase) {
+  const esc = String(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const flexible = esc.replace(/-/g, '[-\\s]?'); // "pen-test" ~ "pen test"
+  return new RegExp('\\b' + flexible + '\\b', 'i');
+}
+export function expandQuery(query) {
+  const q = String(query || '');
+  const add = [];
+  for (const g of SYNONYMS) {
+    if (!g.anchors.length) continue;
+    if (g.match.some((m) => _phraseRe(m).test(q))) add.push(...g.anchors);
+  }
+  return add.length ? (q + ' ' + add.join(' ')) : q;
+}
+
+// ---------------------------------------------------------------------------
 // THRESHOLD: a query "matches" when the best chunk contains at least one
 // non-stopword query term. Justification: every retained term has IDF >= 1,
 // so one content-term hit scores >= 1; below that the page shares no content
@@ -260,7 +321,7 @@ export function brandExcerpts() {
   };
 }
 export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
-  const qTerms = [...new Set(tokens(query))];
+  const qTerms = [...new Set(tokens(expandQuery(query)))];
   const ranked = CHUNKS
     .map((ch) => ({ ch, s: scoreChunk(ch, qTerms) }))
     .filter((x) => x.s > 0)
@@ -471,7 +532,7 @@ export function buildQuery(messages) {
 // contains a known fact. A rank of 0/absent means no chunk carries the fact.
 // ---------------------------------------------------------------------------
 export function rankAll(query) {
-  const qTerms = [...new Set(tokens(query))];
+  const qTerms = [...new Set(tokens(expandQuery(query)))];
   return CHUNKS
     .map((ch) => ({ ch, s: scoreChunk(ch, qTerms) }))
     .filter((x) => x.s > 0)

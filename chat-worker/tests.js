@@ -1928,6 +1928,45 @@ await t('IMP1d distinctive single-token follow-up still stands alone (guard)', a
   assert(q === 'What is EntraSync?', 'distinctive "EntraSync" -> latest only, got: ' + JSON.stringify(q));
 });
 
+await t('IMP2a "pen test" expands to the KB\'s pentest wording -> home page found', async () => {
+  const e = R.expandQuery('What is a pen test and do you offer it?');
+  assert(/penetration testing/.test(e) && /red team/.test(e), 'appends pentest anchors, got: ' + e);
+  const r = R.retrieve('What is a pen test and do you offer it?');
+  const urls = r.top.map((x) => x.url);
+  assert(urls.includes('/'), 'home (service areas) in top-5, got ' + urls.join(','));
+  const rank = urls.indexOf('/');
+  assert(rank >= 0 && rank < 3, 'home in top-3, rank ' + (rank + 1));
+});
+
+await t('IMP2b "founder" -> /about (Stanley Zheng), not a canned rejection', async () => {
+  const e = R.expandQuery('And who is the founder?');
+  assert(/stanley zheng/.test(e.toLowerCase()), 'appends the founder anchor, got: ' + e);
+  const r = R.retrieve('And who is the founder?');
+  const urls = r.top.map((x) => x.url);
+  assert(urls.includes('/about'), '/about in top-5, got ' + urls.join(','));
+  assert(r.mode === 'grounded', 'grounded (not canned), mode=' + r.mode);
+});
+
+await t('IMP2c price/cost -> no retrieval anchors, still lead-capture (social) mode', async () => {
+  assert(R.expandQuery('How much does it cost?') === 'How much does it cost?', 'price group adds no anchors');
+  const r = R.retrieve('How much does it cost?');
+  assert(r.mode === 'social', 'buying intent -> social/lead-capture mode, got ' + r.mode);
+});
+
+await t('IMP2d unrelated query is NOT expanded (identity)', async () => {
+  assert(R.expandQuery('What is the weather like in New York?') === 'What is the weather like in New York?', 'no synonym expansion for unrelated text');
+});
+
+await t('IMP2e alternate offensive-security wording ("offensive security") also expands', async () => {
+  const e = R.expandQuery('Do you do offensive security?');
+  assert(/pentest|penetration testing/.test(e), 'appends pentest anchors, got: ' + e);
+});
+
+await t('IMP2f "reteam" (one word) does NOT falsely match the "red team" phrase', async () => {
+  const e = R.expandQuery('Please reteam the project.');
+  assert(!/penetration testing/.test(e), 'word-boundary guard: no pentest anchors, got: ' + e);
+});
+
 await t('TO6 sources: grounded = distinct URLs of top-3 chunks sent to the model', async () => {
   const q = 'how long did the DC upgrade take';
   const rr = R.retrieve(q);
