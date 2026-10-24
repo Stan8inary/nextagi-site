@@ -3499,10 +3499,6 @@ await t('IMP4f guard judges the LATEST turn only (carry-over cannot taint)', asy
 // Spec: NO retry on 429/quota; a friendly message WITH the contact-form link;
 // only the error code is logged (never the upstream body, which on 429 quota
 // errors can carry account/billing detail).
-// Behavior already existed in the worker (callModel cancels the upstream body
-// on non-OK and throws with the status; the retry guard is 5xx/timeout only;
-// the 429 branch logs kind+status, writes error_code, and sends the friendly
-// model_unavailable event with the contact link). This test pins all of it.
 await t('IMP6a Gemini 429/quota -> NO retry, friendly msg + contact link, code-only log', async () => {
   let geminiCalls = 0;
   const prev = globalThis.fetch;
@@ -3557,6 +3553,102 @@ await t('IMP6a Gemini 429/quota -> NO retry, friendly msg + contact link, code-o
     assert(!captured.join('\n').includes(LEAK), 'no upstream body text in console output');
   } finally {
     console.error = origErr;
+    globalThis.fetch = prev;
+  }
+});
+
+// ---- IMP7: PII redaction before q_ logging ---------------------------------
+await t('IMP7a redactPII: emails, phones (all common formats), long digit runs', async () => {
+  assert(typeof T.redactPII === 'function', 'redactPII exported');
+  const cases = [
+    // [input, mustContain, mustNotContain]
+    ['email me stan@contoso.com today', '[EMAIL]', ['stan@contoso.com']],
+    ['reach stan+work@sub.example.co.uk', '[EMAIL]', ['stan+work@sub.example.co.uk']],
+    ['call 212-555-0147', '[PHONE]', ['212-555-0147']],
+    ['call +1 (917) 555-0199 now', '[PHONE]', ['917', '555-0199']],
+    ['my number is +1 212 555 0147', '[PHONE]', ['212 555']],
+    ['cc 4242 4242 4242 4242', '[DIGITS]', ['4242 4242']],
+    ['card 4242-4242-4242-4242', '[DIGITS]', ['4242-4242']],
+    ['ssn 123-45-6789 please', '[DIGITS]', ['123-45-6789']],
+    ['email stan@contoso.com, call 212-555-0147, cc 4242 4242 4242 4242', null, ['stan@contoso.com', '212-555-0147', '4242 4242']],
+    // negatives: ordinary content must NOT be touched
+    ['DC upgrade took 3 weeks with 5 FSMO roles', '', ['[EMAIL]', '[PHONE]', '[DIGITS]']],
+    ['how did v2 of the audit find 2 faults?', '', ['[EMAIL]', '[PHONE]', '[DIGITS]']],
+    ['what is the price of gemini-3.5-flash-lite?', '', ['[EMAIL]', '[PHONE]', '[DIGITS]']],
+  ];
+  for (const [input, must, mustNot] of cases) {
+    const out = T.redactPII(input);
+    if (must) assert(out.includes(must), input + ' -> contains ' + must + ' (got: ' + out + ')');
+    for (const bad of mustNot) assert(!out.includes(bad), input + ' -> must not contain ' + JSON.stringify(bad) + ' (got: ' + out + ')');
+  }
+  // compound case: all three token types present
+  {
+    const out = T.redactPII('email stan@contoso.com, call 212-555-0147, cc 4242 4242 4242 4242');
+    assert(out.includes('[EMAIL]') && out.includes('[PHONE]') && out.includes('[DIGITS]'),
+      'compound input redacts all three types (got: ' + out + ')');
+  }
+  // idempotent + pass-through
+  assert(T.redactPII(null) === null && T.redactPII('') === '', 'null/empty pass through');
+});
+
+await t('IMP7b canned path: q_ log is REDACTED, raw PII never persisted', async () => {
+  const prev = globalThis.fetch;
+  globalThis.fetch = HARNESS_FETCH;
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv };
+  const email = 'stan@contoso.com';
+  const phone = '212-555-0147';
+  const q = 'My email is ' + email + ' and phone ' + phone + ' — what is the weather in Tokyo?';
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: q }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), env);
+    const txt = await r.text();
+    assert(r.status === 200, 'got ' + r.status);
+    assert(txt.includes('"mode":"canned"'), 'canned mode');
+    const qlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('q_'));
+    assert(qlogs.length >= 1, 'a q_ log was written for the non-answered question');
+    const rec = JSON.parse(qlogs[qlogs.length - 1][1]);
+    assert(rec.question.includes('[EMAIL]'), 'email redacted (got: ' + rec.question + ')');
+    assert(rec.question.includes('[PHONE]'), 'phone redacted (got: ' + rec.question + ')');
+    const raw = JSON.stringify(rec);
+    assert(!raw.includes(email), 'raw email never persisted');
+    assert(!raw.includes(phone), 'raw phone never persisted');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+await t('IMP7c 429 (non-ok) path: q_ log REDACTED there too', async () => {
+  let geminiCalls = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) {
+      geminiCalls += 1;
+      return new Response(JSON.stringify({ error: { status: 'RESOURCE_EXHAUSTED' } }), { status: 429, headers: { 'content-type': 'application/json' } });
+    }
+    if (u.includes('challenges.cloudflare.com/turnstile')) {
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not mocked', { status: 599 });
+  };
+  const kv = makeKV();
+  const env = { ...freshLimiterEnv(), KV_LOG: kv };
+  const email = 'chengxuan+leads@contoso.com';
+  const phone = '+1 (212) 555-0147';
+  const q = 'How long did the DC upgrade take? My email is ' + email + ' and phone ' + phone;
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: q }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), env);
+    await r.text();
+    assert(geminiCalls === 1, 'one model call (429, no retry), got ' + geminiCalls);
+    const qlogs = [...kv.m.entries()].filter(([k]) => k.startsWith('q_'));
+    assert(qlogs.length >= 1, 'a q_ log was written for the non-ok outcome');
+    const rec = JSON.parse(qlogs[qlogs.length - 1][1]);
+    assert(rec.question.includes('[EMAIL]'), 'email redacted (got: ' + rec.question + ')');
+    assert(rec.question.includes('[PHONE]'), 'phone redacted (got: ' + rec.question + ')');
+    const raw = JSON.stringify(rec);
+    assert(!raw.includes(email), 'raw email never persisted');
+    assert(!raw.includes('555-0147'), 'raw phone never persisted');
+  } finally {
     globalThis.fetch = prev;
   }
 });

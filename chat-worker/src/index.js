@@ -42,7 +42,7 @@ import widgetText from './widget.js';
 // below are imported for INTERNAL use only; tests.js imports ./src/retrieval.js
 // directly to assert top-K URLs/scores without a model.
 import { retrieve, buildQuery, INDEX, isBuying } from './retrieval.js';
-import { stripInlineRefs, safePrefix } from './text.js';
+import { stripInlineRefs, safePrefix, redactPII } from './text.js';
 import { resolveBriefing, buildBriefingBlock, newestPublished } from './briefings.js';
 
 // Gemini API-key env var name, built from parts so the secret-name literal
@@ -1098,11 +1098,13 @@ async function handleChat(request, env, ctx) {
 
 
 // Fire-and-forget question log (never blocks the stream, never throws).
+// IMP7: emails, phone numbers, and long digit strings are REDACTED before
+// persistence — the raw values never reach KV.
 function logQuestion(question, env, ctx) {
   const key = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   kvPut(env, ctx, key, JSON.stringify({
     ts: new Date().toISOString(),
-    question: String(question).slice(0, 2000),
+    question: redactPII(String(question)).slice(0, 2000),
   }), { expirationTtl: QUESTION_LOG_TTL });
 }
 

@@ -50,4 +50,25 @@ export function safePrefix(s) {
   return s; // closed bracket: if it were a citation, stripInlineRefs removed it
 }
 
-export default { stripInlineRefs, safePrefix };
+// ---- IMP7: PII redaction for question logs -------------------------------
+// The q_ log stores question text for lead follow-up, but per policy emails,
+// phone numbers, and long digit strings (card numbers, SSNs, order/IDs)
+// must never be persisted in the clear. redactPII() is applied inside
+// logQuestion() — the single choke point for EVERY q_ write (canned path,
+// non-ok outcome, buying-intent ok) — so the model prompt, t_ timing logs,
+// and console output are unaffected; only the persisted question text is
+// redacted. Tokens are short, fixed, and unambiguous.
+// Order matters: emails first (their local/domain parts contain digit runs
+// that the later passes would otherwise mis-token), then phones, then long
+// digit runs (8+ digits, with optional single space/dash separators — this
+// also catches 16-digit card numbers and 123-45-6789 style SSNs).
+export function redactPII(t) {
+  if (typeof t !== 'string' || !t) return t;
+  let s = String(t);
+  s = s.replace(/[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, '[EMAIL]');
+  s = s.replace(/(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}\b/g, '[PHONE]');
+  s = s.replace(/\b\d(?:[\s-]?\d){7,}\b/g, '[DIGITS]');
+  return s;
+}
+
+export default { stripInlineRefs, safePrefix, redactPII };
