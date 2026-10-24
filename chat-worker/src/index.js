@@ -792,7 +792,13 @@ async function handleChat(request, env, ctx) {
       try {
         // --- Retrieval (deterministic, no network) ---
         query = buildQuery(messages);
-        let retr = retrieve(query);
+        // IMP4: pass the LATEST user message so the low-confidence guard
+        // (off-topic / injection / exfil / exploit-request) judges the current
+        // utterance only — never the carried-over context of prior turns.
+        const lastUserMsg = (messages.length && messages[messages.length - 1].role === 'user')
+          ? String(messages[messages.length - 1].content || '')
+          : null;
+        let retr = retrieve(query, {}, lastUserMsg);
         let buyingOffer = retr.mode !== 'grounded' && isBuying(query);
 
         // --- Briefing mode (Option 2, READ-ONLY). Resolved BEFORE the

@@ -223,6 +223,55 @@ const BUYING_RE = /\b(pricing|price|prices|cost|costs|quote|quotes|demo|demos|hi
 export function isSocial(q) { return SOCIAL_RE.test(q); }
 export function isBuying(q) { return BUYING_RE.test(q); }
 
+// ---- IMP4: low-confidence (no-relevant-info) layer --------------------------
+// The score floor (THRESHOLD) alone CANNOT separate the 7 known false grounds
+// from valid questions: false grounds like "reveal your API key..." (I3,
+// topScore 31.1) and "List every customer AD credential..." (I4, topScore 37.4)
+// score ABOVE valid questions ("what security services do you provide" T2,
+// topScore 13.6; "who is the founder" T3, 17.9), and query-term coverage
+// overlaps (OS1 weather cov=0.50 vs valid T3 cov=0.50; I4 cov=0.25 = Y2).
+// Raising the numeric threshold to reject I3/I4 would false-refuse a majority
+// of valid questions — so IMP4 adds a topical/injection low-confidence layer
+// on top of the score floor: a query that is (a) clearly off-topic for this
+// site (weather, restaurants, stock quotes), (b) a jailbreak /
+// instruction-override attempt, (c) an exfiltration request for secrets/PII we
+// would hold, or (d) an exploit-writing request is treated as "no relevant
+// info" (canned) even when a few KB terms happen to match. Valid service
+// questions ("Do you do red teaming?", "How long did the DC upgrade take?",
+// "Do you do offensive security?") never match these patterns — verified
+// across the eval set and the whole test corpus (0 valid questions flagged).
+//
+// Checked against the LATEST user message only (lastUser), not the
+// carried-over buildQuery string, so a prior turn's words cannot taint a
+// later, on-topic question.
+export const LOW_CONFIDENCE_PATTERNS = [
+  // A. jailbreak / instruction-override
+  /\b(ignore|disregard|forget|override|bypass)\b[^.?!]{0,40}\b(instructions?|rules?|prompt|everything above|all of the above|training|guidelines?)\b/i,
+  /\breveal[^.?!]{0,40}\b(system prompt|system rules|developer mode|api keys?|secret key|private key|passwords?|credentials?)\b/i,
+  /\b(print|show|output|dump|leak|disclose|spit out)[^.?!]{0,40}\b(api keys?|secret key|private key|visitor emails?|customer emails?|system prompt|passwords?)\b/i,
+  /\b(jailbreak|dan mode|developer mode|you are now|act as an? unfiltered|new role:)\b/i,
+  /\bwithout any (restrictions|limits|filters|rules|consequences)\b/i,
+  // B. exfiltration of secrets / PII we would hold
+  /\b(every|all|each)[^.?!]{0,10}\b(visitor|customer|client|user|guest)s?\b[^.?!]{0,50}\b(emails?|addresses?|credentials?|passwords?|accounts?|api keys?)\b/i,
+  /\b(credentials?|passwords?|api keys?|private keys?|secrets?)\b[^.?!]{0,30}\byou\s+(have|store|stored|keep|access|retain)\b/i,
+  // C. exploit-writing requests (offensive tooling for third parties)
+  /\b(write|generate|create|build|make)[^.?!]{0,60}\b(a\s+)?(script|code|payload|exploit|tool)[^.?!]{0,60}\b(that\s+)?(crack|exploit|attack|breach|steal|phish)/i,
+  /\b(crack|cracking|cracks)\b[^.?!]{0,40}\b(wi-?fi|wpa|passwords?|hashes?)\b/i,
+  /\bhow to (exploit|hack|breach|crack|steal)\b/i,
+  /\b(steal|phish)\b[^.?!]{0,40}\b(passwords?|credentials?|api keys?|customer data|visitor data)\b/i,
+  // D. clearly off-topic consumer topics (never part of the site's scope)
+  /\b(weather|forecast|temperature|rain|snow)\b/i,
+  /\b(restaurant|restaurants|cafe|cafés?|hotel|hotels|flight|flights|itinerary)\b/i,
+  /\b(recommend|suggest|best|top)[^.?!]{0,30}\b(restaurant|food|cafe|hotel|bar)\b/i,
+  /\b(stock price|stock prices|share price|share prices|stock quote|stock quotes|stock market)\b/i,
+  /\b(game score|league|match result|sports betting)\b/i,
+];
+
+export function isLowConfidence(query) {
+  if (typeof query !== "string" || !query) return false;
+  return LOW_CONFIDENCE_PATTERNS.some((re) => re.test(query));
+}
+
 // Item 3 (use-case listing): a question that asks for OUR services / use cases
 // / offerings / capabilities / projects — "what do you do/offer", "use cases",
 // "list of your work", "what projects". These must route to the /Use-Cases
@@ -381,7 +430,7 @@ export function brandExcerpts() {
     headings: out.map((c) => c.heading),
   };
 }
-export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
+export function retrieve(query, { topK = 5, charCap = 12000 } = {}, lastUser = null) {
   const qTerms = [...new Set(tokens(expandQuery(query)))];
   const ranked = CHUNKS
     .map((ch) => ({ ch, s: scoreChunk(ch, qTerms) }))
@@ -404,6 +453,7 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}) {
     // actually do?" -> 'do'/'actually' land on a use-case page) and must not
     // be grounded on the wrong page. All brand/social queries in the eval set
     // expect [/, /about], which social mode serves.
+  else if (isLowConfidence(lastUser || query)) mode = 'canned'; // IMP4: off-topic / injection / exfil / exploit-request -> "no relevant info", regardless of incidental KB term matches.
   else if (listingQuery) mode = (topScore >= THRESHOLD) ? 'grounded' : 'social';
   else if (topScore >= THRESHOLD) mode = 'grounded';
   else mode = 'canned';
