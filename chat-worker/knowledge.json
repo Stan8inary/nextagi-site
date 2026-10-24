@@ -69,6 +69,12 @@
     "title": "Cybersecurity Briefings | AppoSight",
     "url": "/briefings",
     "summary": "Daily threat intelligence and security analysis. Actionable insights for the modern threat landscape.",
-    "text": "Cybersecurity Briefings | AppoSight\n\n## Cybersecurity Briefings.\n\nDaily threat intelligence and security analysis. Actionable insights for the modern threat landscape.\n\nLoading latest briefing...\n\n## Weekly Analysis\n\nMachine speed. Human judgment.\n\nLoading weekly analysis..."
+    "text": "Cybersecurity Briefings | AppoSight\n\n## Cybersecurity Briefings.\n\nDaily threat intelligence and security analysis. Actionable insights for the modern threat landscape.\n\nThe full daily briefing, delivered to your inbox — free, unsubscribe anytime.\nSubscribe by email\n\n&times;\n\n## Get the Daily Briefing\n\nOne email a day — the full briefing. Click the link we send to confirm; unsubscribe anytime.\n\nSubscribe\n\nLoading latest briefing...\n\n## Weekly Analysis\n\nMachine speed. Human judgment.\n\nLoading weekly analysis..."
+  },
+  {
+    "title": "Contact & Basics",
+    "url": "/#contact",
+    "summary": "How to reach AppoSight (contact form on the home page) and a short summary of what the company does.",
+    "text": "## Contact\nTo contact AppoSight, use the contact form on the home page: the \"Let's build the future together.\" section (anchor #contact). It asks for your name, your email, an optional phone number, and a short message about your project. The site publishes no public email address, no phone number, and no physical address, and it does not state a response time. The form is the way the site directs visitors to reach the AppoSight team.\n\n## What AppoSight does\nAppoSight builds autonomous AI systems (\"Intelligence, Reimagined. Building the future of autonomous AI systems.\"): fine-tuning of language models, AI agents that plan, reason, and execute workflows, model serving and local inference, audio and text-to-speech, model evaluation, and AI penetration testing — autonomous red team operations. The use-case pages describe applied work in identity and access management, Microsoft Entra, Active Directory, and Azure deployments.\n\n## Getting started\nQuestions about pricing, engagements, or fit are handled through the same contact form on the home page. Include a short description of the project so the AppoSight team can follow up."
   }
 ]

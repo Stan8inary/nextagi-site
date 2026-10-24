@@ -3531,6 +3531,49 @@ await t('REG1 guard is stateless: repeated sequences give consistent results', a
   }
 });
 
+// ---- FIX2: contact & basics gap --------------------------------------------
+// "How do I contact you?" previously scored 0 in the KB and was canned (a
+// hard refusal of the most basic visitor question). The fix adds a
+// hand-authored "Contact & Basics" page to the KB build (contact form at
+// /#contact + what the company does, from site-visible facts only; the site
+// publishes no email/phone/address, and the chunk says so) and routes
+// bot-identity questions ("are you a bot?") to the same friendly social
+// branch as greetings.
+const cbKnowledge = (await import('./src/knowledge.js')).default;
+const cbPage = cbKnowledge.find((p) => p.url === '/#contact');
+
+await t('CB1 KB contains the Contact & Basics page, site-true, no invented contact details', async () => {
+  assert(cbPage, 'Contact & Basics page present in KB');
+  assert(cbPage.url === '/#contact', 'url is the home-page contact anchor');
+  const t = cbPage.text;
+  assert(/contact form/.test(t), 'mentions the contact form');
+  assert(/#\s*contact|anchor #contact/.test(t), 'points at the #contact anchor');
+  assert(/no public email address|no phone number|no physical address/.test(t), 'states the site publishes none');
+  assert(!/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/.test(t), 'contains NO email address (nothing invented)');
+  assert(!/(\+?1?[\s.-]?)?(\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}/.test(t), 'contains NO phone number (nothing invented)');
+  assert(!/\b\d{1,2}\s+(?:AM|PM|EST|ET|CST|CDT|PST|PDT)\b/i.test(t), 'contains NO business hours (nothing invented)');
+});
+
+await t('CB2 "How do I contact you?" -> answered (grounded on the contact page), not canned', async () => {
+  const q = 'How do I contact you?';
+  const r = R.retrieve(R.buildQuery([{ role: 'user', content: q }]), {}, q);
+  assert(r.mode !== 'canned', 'not canned, got ' + r.mode);
+  assert((r.sources || []).includes('/#contact'), 'sources include the contact page, got ' + JSON.stringify(r.sources));
+  assert(r.chunks.some((c) => c.url === '/#contact'), 'contact chunk is in the model context');
+  const ctx = r.chunks.map((c) => c.text).join('\n');
+  assert(/contact form/.test(ctx), 'context tells the model about the contact form');
+});
+
+await t('CB3 greetings / thanks / bot-identity -> friendly social branch, never a hard refusal', async () => {
+  for (const q of ['hi', 'thanks', 'Are you a bot?', 'Is this a robot?', 'you a bot?']) {
+    const r = R.retrieve(R.buildQuery([{ role: 'user', content: q }]), {}, q);
+    assert(r.mode === 'social', `${JSON.stringify(q)} -> social, got ${r.mode}`);
+  }
+  // ...and the bot-identity branch must not swallow a real technical question.
+  const tech = 'Is this a valid configuration for our Azure AD tenant?';
+  assert(!R.isSocial(tech), 'technical "is this a ..." question is NOT social');
+});
+
 // ---- IMP6: Gemini 429 / quota handling ------------------------------------
 // Spec: NO retry on 429/quota; a friendly message WITH the contact-form link;
 // only the error code is logged (never the upstream body, which on 429 quota

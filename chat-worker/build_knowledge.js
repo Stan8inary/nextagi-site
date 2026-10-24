@@ -246,7 +246,37 @@ while ((m = re.exec(src)) !== null) {
 const seen = new Set();
 const pagesClean = pages.filter((p) => (seen.has(p.url) ? false : (seen.add(p.url), true)));
 
-const kb = pagesClean.map(({ title, url, text, summary }) => ({ title, url, summary, text }));
+// ---- Synthetic "Contact & Basics" page -------------------------------------
+// The 12 extracted pages answer topical questions, but NOTHING in the KB says
+// how to REACH the company: the contact form sits in the home page's contact
+// section and after tag-strip its labels are the only trace, so basic visitor
+// questions ("How do I contact you?") scored 0 and were canned (holdout #10).
+// This hand-authored chunk uses ONLY facts visible on apposight.com (home
+// hero, capabilities grid, contact section at /#contact) so basic questions
+// retrieve a real answer.
+// SAFETY: the public site publishes NO email address, NO phone number, NO
+// physical address, and no response time (verified: no mailto: links, no
+// phone digits, no location text in any public page constant; the only
+// addresses in the worker are backend Brevo notification code, which this
+// build excludes). The chunk therefore states that explicitly and points to
+// the contact form — the site's own contact channel. Nothing is invented.
+const CONTACT_BASICS = {
+  title: 'Contact & Basics',
+  url: '/#contact',
+  summary: 'How to reach AppoSight (contact form on the home page) and a short summary of what the company does.',
+  text: [
+    '## Contact',
+    'To contact AppoSight, use the contact form on the home page: the "Let\'s build the future together." section (anchor #contact). It asks for your name, your email, an optional phone number, and a short message about your project. The site publishes no public email address, no phone number, and no physical address, and it does not state a response time. The form is the way the site directs visitors to reach the AppoSight team.',
+    '',
+    '## What AppoSight does',
+    'AppoSight builds autonomous AI systems ("Intelligence, Reimagined. Building the future of autonomous AI systems."): fine-tuning of language models, AI agents that plan, reason, and execute workflows, model serving and local inference, audio and text-to-speech, model evaluation, and AI penetration testing — autonomous red team operations. The use-case pages describe applied work in identity and access management, Microsoft Entra, Active Directory, and Azure deployments.',
+    '',
+    '## Getting started',
+    'Questions about pricing, engagements, or fit are handled through the same contact form on the home page. Include a short description of the project so the AppoSight team can follow up.',
+  ].join('\n'),
+};
+
+const kb = [...pagesClean.map(({ title, url, text, summary }) => ({ title, url, summary, text })), CONTACT_BASICS];
 fs.writeFileSync(OUT_JSON, JSON.stringify(kb, null, 2));
 
 // Emit the importable ES module the worker uses. `export default` keeps the

@@ -218,7 +218,7 @@ function scoreChunk(ch, qTerms) {
 // ("what does AppoSight do") tokenize to EMPTY. isSocial() doubles as the
 // brand-fallback: these go to the model with the page index only (never the
 // canned "I don't have that" — the site obviously IS AppoSight).
-const SOCIAL_RE = /\b(hi|hello|hey|howdy|yo|hiya|thanks|thank|bye|goodbye|good (morning|afternoon|evening)|how are you|how are things|who are you|who is apposight|about you|tell me about (you|yourselves)|what is this)\b|\bapposight\b/i;
+const SOCIAL_RE = /\b(hi|hello|hey|howdy|yo|hiya|thanks|thank|bye|goodbye|good (morning|afternoon|evening)|how are you|how are things|who are you|who is apposight|about you|tell me about (you|yourselves)|what is this)\b|\bapposight\b|((?:are|is)\s+(?:you|this)\s+(?:a|an)?\s*(?:bot|robot|human|chatbot)|\byou\s+(?:a|an)\s+(?:bot|robot|human)\b)/i;
 const BUYING_RE = /\b(pricing|price|prices|cost|costs|quote|quotes|demo|demos|hire|hiring|engagement|engagements|budget|how much|invoice|invoices|fee|fees|rate|rates|contract|purchase|buy|procure|sow|scope of work|retainer)\b/i;
 export function isSocial(q) { return SOCIAL_RE.test(q); }
 export function isBuying(q) { return BUYING_RE.test(q); }
