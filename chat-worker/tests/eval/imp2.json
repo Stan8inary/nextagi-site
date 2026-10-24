@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-24T15:51:46.275Z",
+  "generated": "2026-10-24T15:54:57.445Z",
   "threshold": 1,
   "counts": {
     "total": 40,
@@ -13,9 +13,9 @@
       "pct": 81.3
     },
     "top5": {
-      "hits": 31,
+      "hits": 32,
       "of": 32,
-      "pct": 96.9
+      "pct": 100
     }
   },
   "rank": {
@@ -30,9 +30,7 @@
       "pct": 90.6
     }
   },
-  "misses": [
-    "T6"
-  ],
+  "misses": [],
   "rejection": {
     "correctly_rejected": 1,
     "of": 8,
@@ -73,9 +71,10 @@
       "id": "S2",
       "cat": "simple",
       "query": "Who founded AppoSight?",
-      "mode": "grounded",
+      "mode": "social",
       "topScore": 13.85,
       "src": [
+        "/",
         "/about"
       ],
       "top1": "/about",
@@ -85,7 +84,7 @@
       "expect": [
         "/about"
       ],
-      "eff_top1": true,
+      "eff_top1": null,
       "eff_top5": true,
       "rank_top1": true,
       "rank_top5": true
@@ -452,11 +451,11 @@
       "id": "T6",
       "cat": "two_page",
       "query": "Who are you, and what do you actually do?",
-      "mode": "grounded",
+      "mode": "social",
       "topScore": 7.96,
       "src": [
-        "/use-cases/dc-azure-security",
-        "/use-cases/dc-upgrade"
+        "/",
+        "/about"
       ],
       "top1": "/use-cases/dc-azure-security",
       "top5": [
@@ -470,8 +469,8 @@
         "/about",
         "/"
       ],
-      "eff_top1": null,
-      "eff_top5": null,
+      "eff_top1": true,
+      "eff_top5": true,
       "rank_top1": null,
       "rank_top5": null
     },

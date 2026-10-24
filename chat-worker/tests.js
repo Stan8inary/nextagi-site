@@ -1977,6 +1977,55 @@ await t('IMP2g brand question ("who are you ... do") -> social, NOT grounded on 
   assert(r.chunks.some((c) => c.url === '/'), 'home served in social context');
 });
 
+// ---- IMP3: scorer (linear default, BM25 configurable) -----------------------
+await t('IMP3a default scorer is linear (corpus-best; passes all pinned tests)', async () => {
+  assert(R.getScorer() === 'linear', 'default SCORER=linear, got ' + R.getScorer());
+});
+
+await t('IMP3b setScorer rejects unknown modes', async () => {
+  let threw = false;
+  try { R.setScorer('cosine'); } catch (e) { threw = /unknown scorer/.test(e.message); }
+  assert(threw, 'setScorer rejects an unknown mode');
+});
+
+await t('IMP3c BM25 mode is functional and keeps THRESHOLD semantics', async () => {
+  const prev = R.getScorer();
+  try {
+    R.setScorer('bm25');
+    // A distinctive single content term must still match (score >= THRESHOLD=1),
+    // i.e. BM25 does not silently disable retrieval.
+    const r = R.retrieve('What is EntraSync?');
+    assert(r.mode !== 'canned', 'distinctive term still matches in bm25 mode, got ' + r.mode);
+    assert(r.chunks.length > 0, 'bm25 returns chunks');
+    assert(r.topScore >= 1, 'bm25 topScore >= THRESHOLD(1), got ' + r.topScore);
+  } finally {
+    R.setScorer(prev); // restore the production default
+  }
+  assert(R.getScorer() === 'linear', 'restored to linear after test');
+});
+
+await t('IMP3d linear and bm25 are genuinely distinct scorers', async () => {
+  const prev = R.getScorer();
+  const probes = [
+    'Do you do AKS work? How long did it take?',
+    'How long did the DC upgrade take?',
+    'Tell me about the event-driven Azure AD sync project.',
+  ];
+  let distinct = false;
+  try {
+    const top5 = (scorer) => {
+      R.setScorer(scorer);
+      return probes.map((q) => R.rankAll(q).slice(0, 5).map((x) => x.ch.url).join(','));
+    };
+    const lin = top5('linear');
+    const bm = top5('bm25');
+    distinct = lin.some((s, i) => s !== bm[i]);
+  } finally {
+    R.setScorer(prev);
+  }
+  assert(distinct, 'at least one probe ranks differently under linear vs bm25');
+});
+
 await t('TO6 sources: grounded = distinct URLs of top-3 chunks sent to the model', async () => {
   const q = 'how long did the DC upgrade take';
   const rr = R.retrieve(q);

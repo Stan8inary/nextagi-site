@@ -136,13 +136,74 @@ const idf = (t) => IDF.get(t) ?? 1;
 const TITLE_BOOST = 1.5;
 
 // ---------------------------------------------------------------------------
+// Scorer (IMP3). Two selectable modes via SCORER; both share the same IDF,
+// heading boost (TITLE_BOOST), topK=5, 12k char cap and chunk rules.
+//
+//   'linear' (DEFAULT)  — plain TF*IDF:  score = Σ idf(t)·f(t) + heading.
+//                          Chosen as the default because it is the corpus's
+//                          best scorer: it passes ALL pinned quality tests and
+//                          the eval top-5 = 100%. The correct chunks in this
+//                          KB are LONG and anchored by a repeated distinctive
+//                          term (e.g. "aks" in the AKS chunk; the DC-upgrade
+//                          timeline chunk in R11), so they need the linear
+//                          term-frequency reward and must NOT be length-
+//                          penalised — R11 explicitly expects that long
+//                          timeline chunk to stay in the top-5.
+//
+//   'bm25'              — BM25 with configurable K1 (TF saturation) and B
+//                          (document-length normalisation):
+//                            idf(t)·f·(K1+1) / (f + K1·(1 − B + B·|D|/AVGDL))
+//                          IMPLEMENTED and configurable, but NOT the default:
+//                          an ablation over K1∈{1.2,5,10,50,100}×B∈{0.25,0.5,
+//                          0.75} on the 40-question eval shows that BM25's
+//                          saturation + length-norm demote the long chunks that
+//                          anchor correct answers — it breaks the pinned tests
+//                          R11 (DC-upgrade timeline chunk drops out of top-5),
+//                          R13 (retrieved source set changes) and N1 (Duration
+//                          fact-chunk rank 17). It raises top-1 (81%→91%) only
+//                          by dropping relevant long chunks, a net regression.
+//                          Keep available so K1/B can be re-tuned if the KB
+//                          grows; IDF is unchanged either way, so THRESHOLD=1.0
+//                          keeps its meaning in both modes.
+// ---------------------------------------------------------------------------
+// SCORER is switchable at runtime (default 'linear' = the corpus's best
+// scorer). Production never calls setScorer, so it always runs 'linear'; the
+// setter exists so the BM25 path can be exercised in tests / re-tuned.
+let SCORER = 'linear';                 // 'linear' | 'bm25'
+export function setScorer(mode) {
+  if (mode !== 'linear' && mode !== 'bm25') throw new Error('unknown scorer: ' + mode);
+  SCORER = mode;
+}
+export function getScorer() { return SCORER; }
+export const BM25_K1 = 100;         // TF saturation (used only when SCORER='bm25')
+export const BM25_B = 0.75;         // length normalisation (used only when SCORER='bm25')
+const DOCLEN = CHUNKS.map((ch) => tokens(ch.text).length);
+const AVGDL = DOCLEN.reduce((a, b) => a + b, 0) / (DOCLEN.length || 1);
+const CH_LEN = new Map(CHUNKS.map((ch, i) => [ch, DOCLEN[i] || 1]));
+
+// ---------------------------------------------------------------------------
 // Score every chunk against a query.
 // ---------------------------------------------------------------------------
 function scoreChunk(ch, qTerms) {
   const tf = new Map();
   for (const t of tokens(ch.text)) tf.set(t, (tf.get(t) || 0) + 1);
   let s = 0;
-  for (const t of qTerms) if (tf.has(t)) s += tf.get(t) * idf(t);
+  if (SCORER === 'bm25') {
+    const dl = CH_LEN.get(ch) || 1;
+    for (const t of qTerms) {
+      const f = tf.get(t);
+      if (!f) continue;
+      const denom = f + BM25_K1 * (1 - BM25_B + BM25_B * (dl / AVGDL));
+      s += idf(t) * (f * (BM25_K1 + 1)) / denom;
+    }
+  } else {
+    // linear TF*IDF (default): linear in term frequency, no length penalty.
+    for (const t of qTerms) {
+      const f = tf.get(t);
+      if (!f) continue;
+      s += f * idf(t);
+    }
+  }
   // A query term that hits the chunk's SECTION HEADING gets a small bonus
   // (a heading is a strong topical signal, stronger than body text).
   const headingSet = new Set(tokens(ch.heading));
