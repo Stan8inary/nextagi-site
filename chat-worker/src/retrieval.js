@@ -566,12 +566,18 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}, lastUser = n
     sources = ['/', ...sources];
   }
 
-  // Item 3: the canonical list of use-case page titles (listing page + one per
-  // detail page), for the answer prompt + the test assertion that the model is
-  // asked to enumerate every use case.
+  // Item 3: the canonical list of use-case page titles (one per detail page),
+  // for the answer prompt + the test assertion that the model is asked to
+  // enumerate every use case.
+  // FIX A: the /Use-Cases INDEX page is a collection page, not a use case —
+  // it stays retrievable (it is in INDEX, in `sources`, and its chunk is in
+  // `chunks`), but it must NOT be in the list the model is told to enumerate,
+  // otherwise the answer lists "Use Cases | AppoSight" as if it were one of
+  // the eight real use cases. Order follows the KB array (stable — visitors
+  // may ask about "the second one").
   const useCaseTitles = listingQuery
     ? knowledge
-        .filter((k) => k.url === '/Use-Cases' || k.url.startsWith('/use-cases/'))
+        .filter((k) => k.url.startsWith('/use-cases/'))
         .map((k) => ({ title: k.title, url: k.url }))
     : [];
 

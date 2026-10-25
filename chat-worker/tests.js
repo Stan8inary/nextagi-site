@@ -660,14 +660,49 @@ await t('P3 use-case listing: "What use cases do you have?" -> /Use-Cases + all 
   assert(r.chunks.some((c) => c.url === '/Use-Cases'), '/Use-Cases listing chunk retrieved');
   const urls = r.chunks.map((c) => c.url);
   for (const p of usePages) assert(urls.includes(p.url), 'use-case page in context: ' + p.url);
-  assert(r.useCaseTitles.length === usePages.length, 'useCaseTitles count matches KB, got ' + r.useCaseTitles.length);
-  assert(r.sources.includes('/Use-Cases'), 'sources chips include /Use-Cases');
+  const detailPages = usePages.filter((p) => p.url.startsWith('/use-cases/'));
+  // FIX A: useCaseTitles lists only the REAL use cases (detail pages), not the
+  // /Use-Cases index page.
+  assert(r.useCaseTitles.length === detailPages.length, 'useCaseTitles count == detail pages, got ' + r.useCaseTitles.length);
+  assert(!r.useCaseTitles.some((u) => u.url === '/Use-Cases'), 'FIX A: /Use-Cases index NOT in useCaseTitles');
+  assert(r.sources.includes('/Use-Cases'), 'sources chips include /Use-Cases (still retrievable)');
 });
 
-// Item 3: the ANSWER PROMPT must name every use-case page (no omission).
-await t('P3b answer prompt names EVERY use-case page title (no omission)', async () => {
+// FIX A: the index page must NOT be in the model's enumeration list, and the
+// eight real use cases must keep their stable KB order (visitors ask "the
+// second one").
+await t('FA1 /Use-Cases index excluded from enumeration; 8 real use cases in stable KB order', async () => {
   const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
-  const titles = kb.filter((p) => p.url === '/Use-Cases' || p.url.startsWith('/use-cases/')).map((p) => p.title);
+  const detail = kb.filter((p) => p.url.startsWith('/use-cases/'));
+  const r = R.retrieve('What use cases do you have?');
+  assert(detail.length === 8, 'KB has exactly 8 use-case detail pages, got ' + detail.length);
+  assert(r.useCaseTitles.length === 8, 'exactly 8 enumerated use cases, got ' + r.useCaseTitles.length);
+  assert(JSON.stringify(r.useCaseTitles.map((u) => u.url)) === JSON.stringify(detail.map((p) => p.url)),
+    'enumeration order == KB order (stable for "the second one")');
+  assert(r.useCaseTitles[1].url === detail[1].url, '"the second one" = ' + detail[1].url);
+  // still retrievable: index page chunk + chip present
+  assert(r.chunks.some((c) => c.url === '/Use-Cases'), '/Use-Cases chunk still in context');
+  assert(r.sources.includes('/Use-Cases'), '/Use-Cases still a source chip');
+  // and the enumeration list in the prompt is exactly the 8 detail titles
+  const sp = await (async () => {
+    lastModel = null;
+    await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'What use cases do you have?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    return lastModel ? lastModel.body.systemInstruction.parts[0].text : null;
+  })();
+  const m = sp && sp.match(/Use-case pages to enumerate: ([^\n]*)/);
+  assert(m, 'enumeration list present in prompt');
+  const named = m[1].split('; ');
+  assert(named.length === 8, 'prompt names exactly 8 use cases, got ' + named.length);
+  assert(!named.includes(kb.find((p) => p.url === '/Use-Cases').title), 'index title NOT in the enumeration list');
+  for (const p of detail) assert(named.includes(p.title), 'prompt names: ' + p.title);
+});
+
+// Item 3: the ANSWER PROMPT must name every use-case detail page (no omission).
+// FIX A: the /Use-Cases index page is intentionally NOT in the enumeration
+// (it is a collection page, still present in the page-index for sources).
+await t('P3b answer prompt names EVERY use-case detail-page title (no omission)', async () => {
+  const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
+  const titles = kb.filter((p) => p.url.startsWith('/use-cases/')).map((p) => p.title);
   await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'What use cases do you have?' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
   assert(lastModel, 'model called for listing query');
   const sp = lastModel.body.systemInstruction.parts[0].text;
@@ -681,7 +716,7 @@ await t('P3c "what do you offer"/"services"/"capabilities"/"projects"/"list of y
   for (const q of ['what do you offer', 'services', 'capabilities', 'projects', 'list of your work', 'list your services']) {
     const r = R.retrieve(q);
     assert(r.chunks.some((c) => c.url === '/Use-Cases'), q + ' -> /Use-Cases in context');
-    assert(r.useCaseTitles.length >= 9, q + ' -> full use-case title set, got ' + r.useCaseTitles.length);
+    assert(r.useCaseTitles.length === 8, q + ' -> 8 real use-case titles (FIX A: index excluded), got ' + r.useCaseTitles.length);
   }
 });
 
@@ -702,7 +737,7 @@ await t('L5 "What\'s new in your services?" retrieves /Use-Cases + home (+ about
 await t('L5b "What use cases do you have?" still lists (home additive)', async () => {
   const r = R.retrieve('What use cases do you have?');
   assert(r.chunks.some((c) => c.url === '/Use-Cases'), '/Use-Cases in context');
-  assert(r.useCaseTitles.length >= 9, 'full use-case title set, got ' + r.useCaseTitles.length);
+  assert(r.useCaseTitles.length === 8, '8 real use-case titles (FIX A: index excluded), got ' + r.useCaseTitles.length);
   assert(r.chunks.some((c) => c.url === '/'), 'home now also included (service areas)');
 });
 
@@ -906,11 +941,15 @@ await t('G1c GOLDEN listing prompt: USE-CASE LISTING + every use-case title exac
   for (const m of once) assert(countOcc(region, m) === 1, 'listing: marker exactly once: "' + m + '" (got ' + countOcc(region, m) + ')');
   for (const bad of ['NaN', 'undefined', 'false']) assert(!region.includes(bad), 'listing: no "' + bad + '" in rules');
   assert(!region.includes('BUYING INTENT'), 'listing: no buying rule');
-  // every use-case title present exactly once in the enumerated list
+  // every use-case DETAIL title present exactly once in the enumerated list.
+  // FIX A: the /Use-Cases index title must NOT be enumerated (it is a
+  // collection page, not a use case) — it may still appear in the page index.
   const kb = JSON.parse(await (await import('node:fs/promises')).readFile('./knowledge.json', 'utf8'));
-  const titles = kb.filter((p) => p.url === '/Use-Cases' || p.url.startsWith('/use-cases/')).map((p) => p.title);
-  assert(titles.length >= 9, 'KB has >= 9 use-case pages, got ' + titles.length);
+  const titles = kb.filter((p) => p.url.startsWith('/use-cases/')).map((p) => p.title);
+  assert(titles.length === 8, 'KB has exactly 8 use-case detail pages, got ' + titles.length);
   for (const t of titles) assert(countOcc(region, t) === 1, 'listing: title exactly once: ' + t + ' (got ' + countOcc(region, t) + ')');
+  const indexTitle = kb.find((p) => p.url === '/Use-Cases').title;
+  assert(!region.includes(indexTitle), 'FIX A: index title not in the rules/listing region: ' + indexTitle);
   console.log('    [G1c] listing   rules_region=' + region.length + ' chars, full_prompt=' + sp.length + ' chars');
 });
 
