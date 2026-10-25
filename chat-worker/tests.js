@@ -85,7 +85,7 @@ globalThis.fetch = async (url, opts = {}) => {
     lastModel = { url: u, headers: opts.headers, body: JSON.parse(opts.body) };
     const sse = [
       'data: {"candidates":[{"content":{"parts":[{"text":"AppoSight builds "}]}}]}\n\n',
-      'data: {"candidates":[{"content":{"parts":[{"text":"AI systems."}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"AI systems."}]},"finishReason":"STOP"}]}\n\n',
     ];
     const enc = new TextEncoder();
     return new Response(new ReadableStream({
@@ -422,7 +422,7 @@ await t('T3 buy-intent -> lead_capture marker reached (SSE done carries it)', as
       lastModel = { url: String(url), headers: opts.headers, body: JSON.parse(opts.body) };
       const enc = new TextEncoder();
       return new Response(new ReadableStream({ start(c) {
-        c.enqueue(enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"Happy to help! [[LEAD_CAPTURE]]"}]}}]}\n\n'));
+        c.enqueue(enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"Happy to help! [[LEAD_CAPTURE]]"}]},"finishReason":"STOP"}]}\n\n'));
         c.close();
       }}), { status: 200 });
     }
@@ -3045,7 +3045,7 @@ function sseStream(events) {
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-await t('B1 MAX_TOKENS finish_reason -> "(answer cut off, ask me to continue)" note', async () => {
+await t('B1 MAX_TOKENS finish_reason -> graceful truncation note with source link', async () => {
   const sse = [
     'data: {"candidates":[{"content":{"parts":[{"text":"The weekly analysis"}]}}]}\n\n',
     'data: {"candidates":[{"content":{"parts":[{"text":" covers three items."}]},"finishReason":"MAX_TOKENS"}]}\n\n',
@@ -3061,15 +3061,19 @@ await t('B1 MAX_TOKENS finish_reason -> "(answer cut off, ask me to continue)" n
     const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
     assert(r.status === 200, '200 (got ' + r.status + ')');
     const txt = await r.text();
-    assert(txt.includes('answer cut off, ask me to continue'), 'MAX_TOKENS note present');
+    // FIX B: the cut-off sentence must be visibly flagged, with a link to a
+    // real page (social-mode top source is '/').
+    assert(txt.includes('answer cut short'), 'MAX_TOKENS: truncation note present');
+    assert(txt.includes('https://www.apposight.com/'), 'note carries a source link');
     assert(txt.includes('event: done'), 'done event present');
     assert(/"finish_reason":"MAX_TOKENS"/.test(txt), 'done event reports finish_reason MAX_TOKENS');
+    assert(/"truncated":true/.test(txt), 'done event flags truncated:true');
   } finally {
     globalThis.fetch = prev;
   }
 });
 
-await t('B2 STOP finish_reason -> NO "(answer cut off...)" note', async () => {
+await t('B2 STOP finish_reason -> NO truncation note', async () => {
   const sse = [
     'data: {"candidates":[{"content":{"parts":[{"text":"The weekly analysis"}]}}]}\n\n',
     'data: {"candidates":[{"content":{"parts":[{"text":" covers three items."}]},"finishReason":"STOP"}]}\n\n',
@@ -3085,9 +3089,84 @@ await t('B2 STOP finish_reason -> NO "(answer cut off...)" note', async () => {
     const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
     assert(r.status === 200, '200 (got ' + r.status + ')');
     const txt = await r.text();
-    assert(!txt.includes('answer cut off'), 'STOP must NOT add the cut-off note');
+    assert(!txt.includes('answer cut short'), 'STOP must NOT add the truncation note');
     assert(txt.includes('event: done'), 'done event present');
     assert(/"finish_reason":"STOP"/.test(txt), 'done event reports finish_reason STOP');
+    assert(/"truncated":false/.test(txt), 'done event flags truncated:false');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+await t('B3 stream ends abruptly (NO finishReason) -> partial answer flagged as cut short', async () => {
+  // Real Gemini ALWAYS ends with a final event carrying finishReason. A stream
+  // that just stops mid-sentence (upstream died / idle cap after partial
+  // bytes) must NOT reach the visitor as a normal-looking complete answer.
+  const sse = [
+    'data: {"candidates":[{"content":{"parts":[{"text":"The DC upgrade"}]}}]}\n\n',
+    'data: {"candidates":[{"content":{"parts":[{"text":" completed in 6.3 seconds"}]}}]}\n\n', // stream closes here, no final event
+  ];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) return sseStream(sse);
+    if (u.includes('challenges.cloudflare.com/turnstile')) return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'tell me more about the second one' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    assert(r.status === 200, '200 (got ' + r.status + ')');
+    const txt = await r.text();
+    assert(txt.includes('completed in 6.3 seconds'), 'partial text still delivered');
+    assert(txt.includes('answer cut short'), 'abrupt end flagged with truncation note');
+    assert(/"truncated":true/.test(txt), 'done event flags truncated:true');
+    assert(txt.includes('event: done'), 'done event present');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+await t('B4 SAFETY finish_reason mid-answer -> truncation note, not silent cut', async () => {
+  const sse = [
+    'data: {"candidates":[{"content":{"parts":[{"text":"Sure, here is how"}]}}]}\n\n',
+    'data: {"candidates":[{"content":{"parts":[{"text":" to configure"}]},"finishReason":"SAFETY"}]}\n\n',
+  ];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) return sseStream(sse);
+    if (u.includes('challenges.cloudflare.com/turnstile')) return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    assert(r.status === 200, '200 (got ' + r.status + ')');
+    const txt = await r.text();
+    assert(txt.includes('answer cut short'), 'SAFETY stop flagged with truncation note');
+    assert(/"finish_reason":"SAFETY"/.test(txt), 'done event reports finish_reason SAFETY');
+    assert(/"truncated":true/.test(txt), 'done event flags truncated:true');
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+await t('B5 stream ends EMPTY (no bytes, no finishReason) -> failure message, never a blank bubble', async () => {
+  const sse = []; // headers arrive, stream closes immediately
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('generativelanguage.googleapis.com')) return sseStream(sse);
+    if (u.includes('challenges.cloudflare.com/turnstile')) return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('not mocked', { status: 599 });
+  };
+  try {
+    const r = await worker.fetch(req('/api/chat', { method: 'POST', body: { messages: [{ role: 'user', content: 'who are you' }], cf_turnstile_response: 'tok' }, origin: 'https://apposight.com' }), freshLimiterEnv());
+    assert(r.status === 200, '200 (got ' + r.status + ')');
+    const txt = await r.text();
+    assert(txt.includes('trouble getting an answer'), 'empty stream -> operational failure message');
+    assert(txt.includes('/#contact'), 'points to the contact form');
+    assert(txt.includes('event: done'), 'done event present (widget still renders)');
+    assert(/"truncated":true/.test(txt), 'done event flags truncated:true');
   } finally {
     globalThis.fetch = prev;
   }
@@ -3196,7 +3275,7 @@ const LF = String.fromCharCode(10);
 const okFetch = async (url) => {
   const u = String(url);
   if (u.includes('generativelanguage.googleapis.com')) {
-    const payload = 'data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+    const payload = 'data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] });
     return new Response(payload + LF + LF, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   }
   if (u.includes('challenges.cloudflare.com')) {

@@ -985,6 +985,7 @@ async function handleChat(request, env, ctx) {
                 const obj = JSON.parse(line);
                 const cand = obj && obj.candidates && obj.candidates[0];
                 if (cand && cand.finishReason) finishReason = cand.finishReason;
+                else if (obj && obj.finishReason) finishReason = obj.finishReason; // tolerate top-level placement
                 chunk = (cand && cand.content && cand.content.parts)
                   ? cand.content.parts.map((p) => p.text || '').join('')
                   : '';
@@ -1012,6 +1013,7 @@ async function handleChat(request, env, ctx) {
                   const obj = JSON.parse(line);
                   const cand = obj && obj.candidates && obj.candidates[0];
                   if (cand && cand.finishReason) finishReason = cand.finishReason;
+                else if (obj && obj.finishReason) finishReason = obj.finishReason; // tolerate top-level placement
                   chunk = (cand && cand.content && cand.content.parts)
                     ? cand.content.parts.map((p) => p.text || '').join('')
                     : '';
@@ -1030,15 +1032,37 @@ async function handleChat(request, env, ctx) {
             }
             buffer = '';
           }
-          // MAX_TOKENS: the answer hit the output limit and was truncated.
-          // Instead of a silent cut, append a short continuation note (B).
-          if (finishReason === 'MAX_TOKENS') {
-            accFull += '\n\n(answer cut off, ask me to continue)';
+          // FIX B (truncation): a well-formed Gemini stream ALWAYS ends with a
+          // final event carrying finishReason (STOP, MAX_TOKENS, SAFETY, ...).
+          // Reaching the end of the stream with any of the following means the
+          // answer was cut short, and a half-finished sentence must never reach
+          // the visitor presented as a complete answer:
+          //   - MAX_TOKENS          (output cap of maxOutputTokens, e.g. 1536)
+          //   - SAFETY / PROHIBITED (safety stop mid-answer)
+          //   - finishReason === null (no final event: upstream died / idle cap)
+          // Append a graceful note with a link to the top source page.
+          const truncated =
+            finishReason === 'MAX_TOKENS' ||
+            finishReason === 'SAFETY' ||
+            finishReason === 'PROHIBITED_CONTENT' ||
+            finishReason === null; // no final event = stream ended abnormally
+          if (truncated && accFull) {
+            const topSrc = retrResolved && retrResolved.sources && retrResolved.sources[0];
+            accFull += topSrc
+              ? '\n\n(answer cut short — see ' + SITE + topSrc + ' for the full details.)'
+              : '\n\n(answer cut short — please ask me to continue in a new message.)';
             const safe = safePrefix(stripInlineRefs(accFull));
             if (safe.length > sentLen) {
               send('delta', JSON.stringify({ text: safe.slice(sentLen) }));
               sentLen = safe.length;
             }
+          } else if (finishReason === null && !accFull) {
+            // Stream ended with ZERO answer bytes: an operational failure,
+            // not a knowledge gap. Say so, point to the contact form, and
+            // never deliver a blank bubble.
+            const msg = "I'm having trouble getting an answer right now — please use our contact form (/#contact).";
+            send('delta', JSON.stringify({ text: msg }));
+            sentLen = msg.length;
           }
           send('done', JSON.stringify({
             mode: retrResolved.mode,
@@ -1046,6 +1070,7 @@ async function handleChat(request, env, ctx) {
             lead_capture: leadCapture,
             token_estimate: tokenEstimateResolved,
             finish_reason: finishReason,
+            truncated: truncated,
             disclaimer: 'AI assistant. Chats may be processed by Google. Don\u2019t share sensitive information.',
           }));
           stage('stream_done');
