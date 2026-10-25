@@ -472,6 +472,9 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}, lastUser = n
   // short-circuits it to canned.
   const listingQuery = isListing(query);
   let mode;
+  let cannedReason = null; // FIX C: WHY a canned reply is sent — 'guard' (blocked
+  // pattern family fired) vs 'score_floor' (no KB page scored high enough).
+  // The worker words the two replies differently (see the canned branch).
   if (isBuying(query)) mode = 'social'; // buying -> social mode + lead-capture offer
   else if (isSocial(query)) mode = 'social'; // greeting / brand ("who are you") -> social, WITH home+about context.
     // Checked BEFORE the score branch: a brand question can score above
@@ -479,10 +482,10 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}, lastUser = n
     // actually do?" -> 'do'/'actually' land on a use-case page) and must not
     // be grounded on the wrong page. All brand/social queries in the eval set
     // expect [/, /about], which social mode serves.
-  else if (isLowConfidence(lastUser || query)) mode = 'canned'; // IMP4: off-topic / injection / exfil / exploit-request -> "no relevant info", regardless of incidental KB term matches.
+  else if (isLowConfidence(lastUser || query)) { mode = 'canned'; cannedReason = 'guard'; } // IMP4: off-topic / injection / exfil / exploit-request -> blocked, regardless of incidental KB term matches.
   else if (listingQuery) mode = (topScore >= THRESHOLD) ? 'grounded' : 'social';
   else if (topScore >= THRESHOLD) mode = 'grounded';
-  else mode = 'canned';
+  else { mode = 'canned'; cannedReason = 'score_floor'; } // true knowledge gap: no page scored high enough.
 
   // Enforce the ~12k char cap on retrieved content (keep top-ranked chunks).
   let selected = [];
@@ -585,6 +588,7 @@ export function retrieve(query, { topK = 5, charCap = 12000 } = {}, lastUser = n
     query,
     topScore: Math.round(topScore * 100) / 100,
     mode,
+    cannedReason,
     top: ranked.map((r) => ({ url: r.ch.url, title: r.ch.title, score: Math.round(r.s * 100) / 100 })),
     chunks: selected,
     chars,

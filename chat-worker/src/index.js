@@ -855,17 +855,27 @@ async function handleChat(request, env, ctx) {
         tokenEstimateResolved = retr.tokenEstimate || 0;
 
         // --- Canned no-match (NOT buying, NOT social): no model call, no KB. ---
+        // FIX C: two distinct canned paths, worded differently:
+        //   guard       (injection, secrets, attack artifacts, jailbreak,
+        //                off-topic)  -> short boundary message, NO contact form.
+        //   score_floor (true knowledge gap) -> keep the "not sure" wording +
+        //                the contact form (/#contact).
+        // Neither path calls the model; neither weakens any guard.
         if (retr.mode === 'canned') {
           logQuestion(query, env, ctx);
           stage('retrieval_done');
+          const guard = retr.cannedReason === 'guard';
           send('delta', JSON.stringify({
-            text: 'I don\u2019t have that on the site \u2014 I can only answer from what\u2019s published on AppoSight.',
+            text: guard
+              ? 'I can\u2019t help with that, but I\u2019m happy to answer questions about AppoSight\u2019s services.'
+              : 'I don\u2019t have that on the site \u2014 I can only answer from what\u2019s published on AppoSight.',
           }));
           send('done', JSON.stringify({
             no_match: true,
             mode: 'canned',
-            contact: CONTACT_PATH,
-            contact_url: SITE + '/#contact',
+            canned_reason: guard ? 'guard' : 'score_floor',
+            contact: guard ? null : CONTACT_PATH,
+            contact_url: guard ? null : SITE + '/#contact',
             lead_capture: false,
             sources: [],
             token_estimate: 0,
