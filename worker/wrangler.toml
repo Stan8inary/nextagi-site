@@ -22,3 +22,8 @@ id = "cfc6b070bb0a43c4addaeace26eab491"
 [[kv_namespaces]]
 binding = "BRIEFINGS"
 id = "0d7f71da2f33419f9956c85fabe5e3c5"
+
+# Briefing email subscribers (key = lowercased email, value = JSON with token + status)
+[[kv_namespaces]]
+binding = "SUBSCRIBERS"
+id = "e03904ef8bb44e7b8e44d814f6250618"

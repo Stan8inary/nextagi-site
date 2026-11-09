@@ -175,6 +175,22 @@ async function main() {
     ok('T1 fetchWithTimeout-null-on-abort', r === null, `got ${r}`);
   });
 
+  // ---- P1: rendered /briefings page — inline scripts must parse (regression: apostrophe in string killed the whole block)
+  {
+    const req = new Request('https://www.apposight.com/briefings', { headers: { host: 'www.apposight.com' } });
+    const kv = makeKV();
+    const res = await W.default.fetch(req, { BRIEFINGS: kv, RATE_LIMIT: null, CONTACT_FORMS: kv, SUBSCRIBERS: kv }, {});
+    const html = await res.text();
+    const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    let bad = null;
+    for (const b of blocks) {
+      try { new Function(b); } catch (e) { bad = e.message; break; }
+    }
+    ok('P1 page-inline-scripts-parse', res.status === 200 && blocks.length > 0 && bad === null, `blocks=${blocks.length} ${bad || ''}`);
+    ok('P1 subscribe-strip-present', /subscribeStrip/.test(html) && /subscribeModal/.test(html));
+    ok('P1 old-subscribe-box-gone', !/class="subscribe-box"/.test(html));
+  }
+
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

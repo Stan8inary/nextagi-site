@@ -1,3 +1,4 @@
+import { handleActions, hasActionPlan } from './actions.js';
 const HTML_CONTENT = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1325,6 +1326,12 @@ const USE_CASES_LISTING_HTML = `<!DOCTYPE html>
             <div class="metrics"><div class="metric"><div class="value">0</div><div class="label">Stored secrets</div></div><div class="metric"><div class="value">10</div><div class="label">Validations</div></div></div>
             <span class="arrow">→</span>
         </a>
+
+    <a href="/use-cases/fgt-upgrade" class="case-card fade-in">
+        <div class="info"><h2>FortiGate VM Firmware Upgrade — 7.4.12 → 7.4.13</h2><p>A routine maintenance upgrade of a lab KVM FortiGate — checksum-gated image, off-box backup, snapshot, three install paths, and a syntax-checked REST helper script.</p></div>
+        <div class="metrics"><div class="metric"><div class="value">8 min</div><div class="label">Downtime</div></div><div class="metric"><div class="value">0</div><div class="label">Config diffs</div></div></div>
+        <span class="arrow">→</span>
+    </a>
     </section>
     <footer><p>Copyright © 2026 <a href="/">AppoSight</a>. All rights reserved.</p></footer>
     <script>
@@ -4723,6 +4730,465 @@ ERROR: (ResourceGroupNotFound) Resource group &#39;cpcs-rg&#39; could not be fou
 </body>
 </html>`;
 
+const FGT_UPGRADE_CASE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FortiGate VM Firmware Upgrade 7.4.12 → 7.4.13 — Lab Case Study | AppoSight</title>
+    <meta name="description" content="Routine maintenance upgrade of a lab KVM FortiGate VM from FortiOS 7.4.12 to 7.4.13 — pre-checks, three install paths, rollback, and a companion REST helper script.">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root { --black: #1d1d1f; --gray: #86868b; --light-gray: #f5f5f7; --white: #ffffff; --blue: #2997ff; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--black); background: var(--white); overflow-x: hidden; }
+        nav { position: fixed; top: 0; width: 100%; padding: 14px 40px; background: rgba(255,255,255,0.8); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); z-index: 100; display: flex; justify-content: space-between; align-items: center; }
+        .logo-link { text-decoration: none; color: inherit; }
+        .logo { display: flex; align-items: center; gap: 10px; font-size: 21px; font-weight: 600; letter-spacing: -0.5px; }
+        .logo svg { height: 32px; }
+        @keyframes hexRotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .hex-logo { animation: hexRotate 20s linear infinite; transform-origin: center; }
+        .nav-links a { color: var(--black); text-decoration: none; margin-left: 28px; font-size: 12px; opacity: 0.8; transition: opacity 0.3s; }
+        .nav-links a:hover { opacity: 1; }
+        .back-link { display: inline-block; font-size: 18px; color: var(--blue); text-decoration: none; margin-bottom: 24px; opacity: 0.8; }
+        .back-link:hover { opacity: 1; text-decoration: underline; }
+        .hero { min-height: 60vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background: var(--black); color: var(--white); padding: 120px 20px 60px; }
+        .hero h1 { font-size: clamp(34px, 5.5vw, 56px); font-weight: 700; letter-spacing: -2px; line-height: 1.1; margin-bottom: 16px; max-width: 1000px; }
+        .hero .subtitle { font-size: clamp(16px, 2.2vw, 21px); color: var(--gray); max-width: 720px; line-height: 1.4; margin-bottom: 28px; }
+        .hero .context { max-width: 720px; }
+        .hero .context p { font-size: 15px; color: #b8b8bd; line-height: 1.55; margin-bottom: 10px; text-align: center; }
+        .hero .context strong { color: var(--white); }
+        .hero .context code { color: #d6d6dc; }
+        .section { padding: 80px 40px; max-width: 900px; margin: 0 auto; }
+        .section h2 { font-size: clamp(26px, 4vw, 42px); font-weight: 700; letter-spacing: -1.5px; margin-bottom: 24px; line-height: 1.15; }
+        .section h3 { font-size: 21px; font-weight: 600; letter-spacing: -0.5px; margin: 44px 0 14px; }
+        .section p { font-size: 17px; color: var(--gray); line-height: 1.65; margin-bottom: 20px; }
+        .section p:last-child { margin-bottom: 0; }
+        .section p strong { color: var(--black); }
+        .section em { font-style: italic; }
+        .section code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 14px; background: var(--light-gray); padding: 2px 6px; border-radius: 5px; color: var(--black); }
+        .section ul, .section ol { margin: 0 0 20px 22px; }
+        .section ul li, .section ol li { font-size: 16px; color: var(--gray); line-height: 1.6; margin-bottom: 12px; }
+        .section ul li strong, .section ol li strong { color: var(--black); }
+        .section ul li code, .section ol li code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; background: var(--light-gray); padding: 2px 6px; border-radius: 5px; color: var(--black); }
+        .section blockquote { border-left: 3px solid var(--blue); padding: 14px 22px; margin: 24px 0; background: #f8f9fb; border-radius: 0 12px 12px 0; font-size: 16px; color: var(--gray); line-height: 1.6; }
+        .section blockquote strong { color: var(--black); }
+        .section blockquote code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; background: var(--light-gray); padding: 2px 6px; border-radius: 5px; color: var(--black); }
+        .comp-table { width: 100%; border-collapse: collapse; margin: 28px 0; font-size: 15px; }
+        .comp-table th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--light-gray); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--gray); }
+        .comp-table td { padding: 14px 16px; border-bottom: 1px solid var(--light-gray); color: var(--gray); vertical-align: top; line-height: 1.5; }
+        .comp-table td strong { color: var(--black); }
+        .comp-table td code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; background: var(--light-gray); padding: 2px 6px; border-radius: 5px; color: var(--black); }
+        .diagram { background: #0d0d0f; border-radius: 16px; padding: 26px 24px; margin: 28px 0; overflow-x: auto; }
+        .diagram pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.55; color: #d6d6dc; margin: 0; white-space: pre; }
+        footer { text-align: center; padding: 40px 20px; font-size: 12px; color: var(--gray); border-top: 1px solid var(--light-gray); }
+        footer a { color: var(--blue); text-decoration: none; }
+        .fade-in { opacity: 0; transform: translateY(20px); transition: opacity 0.6s ease, transform 0.6s ease; }
+        .fade-in.visible { opacity: 1; transform: translateY(0); }
+        .hamburger { display: none; flex-direction: column; gap: 5px; background: none; border: none; cursor: pointer; padding: 4px; z-index: 110; }
+        .hamburger span { display: block; width: 24px; height: 2px; background: var(--black); border-radius: 2px; transition: all 0.3s; }
+        .hamburger.active span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+        .hamburger.active span:nth-child(2) { opacity: 0; }
+        .hamburger.active span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+        @media (max-width: 600px) {
+            nav { padding: 14px 20px; }
+            .hamburger { display: flex; }
+            .nav-links { position: fixed; top: 0; right: 0; width: 260px; height: 100vh; background: rgba(255,255,255,0.98); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); display: flex; flex-direction: column; justify-content: center; padding: 0 40px; transform: translateX(100%); transition: transform 0.3s ease; z-index: 105; box-shadow: -4px 0 24px rgba(0,0,0,0.1); }
+            .nav-links.open { transform: translateX(0); }
+            .nav-links a { margin-left: 0; margin-bottom: 24px; font-size: 20px; opacity: 0.85; }
+            .section { padding: 60px 20px; }
+            .section p, .section ul li, .section ol li { font-size: 16px; }
+            .comp-table { font-size: 13px; }
+            .comp-table th, .comp-table td { padding: 10px 8px; }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="logo-link">
+            <div class="logo">
+            <svg viewBox="0 0 400 80" xmlns="http://www.w3.org/2000/svg">
+                <g transform="translate(30, 40)">
+                    <polygon points="0,-22 19,-11 19,11 0,22 -19,11 -19,-11" fill="none" stroke="#2997ff" stroke-width="2.5" class="hex-logo"/>
+                    <polygon points="0,-11 9.5,-5.5 9.5,5.5 0,11 -9.5,5.5 -9.5,-5.5" fill="#2997ff" opacity="0.3"/>
+                </g>
+                <text x="70" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="42" font-weight="700" letter-spacing="-1.5" fill="#1d1d1f">Appo<tspan fill="#2997ff">Sight</tspan></text>
+            </svg>
+            </div>
+        </a>
+        <div class="nav-links">
+            <a href="/about">About</a>
+            <a href="/#capabilities">Capabilities</a>
+            <a href="/#pentest">Pentest</a>
+            <a href="/Use-Cases">Use Cases</a>
+            <a href="/briefings">Briefings</a>
+            <a href="/#contact">Contact</a>
+        </div>
+        <button class="hamburger" aria-label="Menu"><span></span><span></span><span></span></button>
+    </nav>
+
+    <section class="hero">
+        <a href="/Use-Cases" class="back-link fade-in">← All Use Cases</a>
+        <h1 class="fade-in">FortiGate VM Firmware Upgrade: 7.4.12 → 7.4.13</h1>
+        <p class="subtitle fade-in">A routine maintenance release on a lab KVM FortiGate — pre-checks, three install paths, rollback, and a companion REST helper script.</p>
+        <div class="context">
+        <p class="fade-in" style="font-size:16px"><strong>Lab case study — routine maintenance release. KVM FortiGate VM. Not a production procedure.</strong></p>
+        <p class="fade-in" style="font-size:16px"><strong>Disclaimer:</strong> Performed on a lab VM with no FortiGuard subscription. Validate in your own environment before any production use. Provided as-is, no warranty.</p>
+        <p class="fade-in" style="font-size:16px"><strong>Sanitized record.</strong> No real IPs, hostnames, serial numbers, or credential values appear in this post — placeholders stand in where a value is needed.</p>
+        </div>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">Summary</h2>
+        <p class="fade-in">A lab FortiGate VM running FortiOS 7.4.12 (build 2902) was upgraded in place to the current 7.4 maintenance build, 7.4.13 (build 2933), as routine maintenance. Configuration, interfaces, policies and license carried over unchanged. Downtime ≈ 8 minutes (warm reboot). The VM has no FortiGuard subscription, so its AV/IPS databases are frozen and provide no real protection — this is a firmware refresh, not an endpoint-security fix.</p>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">1. Why upgrade</h2>
+        <p class="fade-in">FortiOS 7.4.13 (build 2933) is the current maintenance release for the 7.4 branch, published 22 Oct 2026. Moving the lab VM to the current maintenance build keeps it current and is the normal patching step.</p>
+        <blockquote class="fade-in"><strong>Advisory note:</strong> As of this writing (26 Oct 2026), the official 7.4.13 release notes list one CVE — <strong>CVE-2025-54821 (FG-IR-25-545), Low severity (CVSSv3 1.7), not exploited in the wild</strong>. Fortinet's broader FortiOS 7.4 advisories for the October 2026 release are <strong>embargoed on FortiGuard PSIRT until 10 Nov 2026</strong> and <strong>will be added to the table below when published</strong>.</blockquote>
+        <table class="comp-table fade-in">
+            <tr><th>CVE</th><th>Severity</th><th>Exploited in the wild?</th><th>Notes</th></tr>
+            <tr><td><strong>CVE-2025-54821 (FG-IR-25-545)</strong></td><td>Low (CVSSv3 1.7)</td><td>No</td><td>Authenticated, CLI component. PSIRT: "Migrate to a fixed release"; 7.4.13 release notes: no longer vulnerable.</td></tr>
+            <tr><td><strong>(Oct 2026 hardening advisories)</strong></td><td>unverified</td><td>unverified</td><td>Embargoed until 10 Nov 2026 — <strong>to be added after publication.</strong></td></tr>
+        </table>
+        <p class="fade-in">Before upgrading, read the 7.4.13 release notes (known issues, upgrade path) and confirm 7.4.12 → 7.4.13 is a supported in-branch path.</p>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">2. Pre-checks</h2>
+        <ul class="fade-in">
+            <li><strong>Image provenance:</strong> download only from the Fortinet support portal; verify SHA256 against the published checksum. Use the <code>.out</code> for in-place upgrades; <code>.kvm.zip</code> is for fresh deployments only.</li>
+            <li><strong>Off-box config backup:</strong> export the full config to another machine (a device-local flash backup is not enough).</li>
+            <li><strong>Config backup handling:</strong> treat config backups as secrets (they contain password hashes and pre-shared keys): store encrypted, never commit to git.</li>
+            <li><strong>Rollback point:</strong> take a hypervisor snapshot, but do not rely on reverting an external disk-only snapshot in libvirt. Keep a plan that does not depend on it: the off-box config backup + the old firmware image.</li>
+            <li><strong>Change control:</strong> record a ticket, a maintenance window, and a named approver.</li>
+            <li><strong>Baseline:</strong> note current version, interface states, policy count, license status, and a few test flows (DNS, outbound web, VPN if used).</li>
+        </ul>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">3. Upgrade methods</h2>
+        <p class="fade-in"><strong>Option A: GUI.</strong> System > Firmware, upload the <code>.out</code>, confirm. Simplest, recommended.</p>
+        <p class="fade-in"><strong>Option B: CLI.</strong> <code>execute restore image tftp &lt;filename&gt; &lt;tftp_ipv4&gt;</code> is the documented form. Other transports (FTP/SCP) — check <code>execute restore image ?</code> in the CLI help for your build.</p>
+        <p class="fade-in"><strong>Option C: REST API</strong> (what was used here). Multipart <code>POST</code> to <code>/api/v2/monitor/system/firmware/upgrade</code> with <code>file</code> (the .out) and <code>source=upload</code>; Bearer token (generated from the API key). The device writes the inactive partition and reboots itself.</p>
+        <p class="fade-in">If using the API:</p>
+        <ul class="fade-in">
+            <li>Create a temporary API user with a <code>trusthost</code> limited to the admin workstation.</li>
+            <li>Use a dedicated temporary account (least privilege in the account sense). The lab used super_admin; this endpoint typically needs a high-privilege profile.</li>
+            <li>Verify TLS (avoid <code>curl -k</code>) outside a lab.</li>
+            <li>Delete the API user and key immediately afterwards.</li>
+        </ul>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">4. Result</h2>
+        <table class="comp-table fade-in">
+            <tr><th>Item</th><th>Before</th><th>After</th></tr>
+            <tr><td><strong>Version</strong></td><td>7.4.12 build 2902</td><td>7.4.13 build 2933</td></tr>
+            <tr><td><strong>Interfaces</strong></td><td>up</td><td>up, unchanged</td></tr>
+            <tr><td><strong>Policies</strong></td><td>present</td><td>present, unchanged</td></tr>
+            <tr><td><strong>Mode / HA</strong></td><td>NAT, standalone</td><td>unchanged</td></tr>
+            <tr><td><strong>License / serial</strong></td><td>valid</td><td>unchanged, no re-import</td></tr>
+            <tr><td><strong>Downtime</strong></td><td>—</td><td>~8 minutes (warm reboot)</td></tr>
+        </table>
+        <p class="fade-in">The system automatically saved a config revision as part of the upgrade, alongside the manual pre-upgrade backup.</p>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">5. Post-upgrade verification checklist</h2>
+        <ul class="fade-in">
+            <li>Version and build match the target</li>
+            <li>Interfaces up with expected addresses</li>
+            <li>Policy count and a sample of rules unchanged</li>
+            <li>License valid, serial unchanged</li>
+            <li><strong>Functional tests:</strong> traffic passes through each policy, DNS resolves, VPN tunnels reconnect, logging works</li>
+            <li>Temporary API user and key removed</li>
+            <li>Hypervisor snapshot merged or deleted once the change is accepted</li>
+        </ul>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">6. Rollback</h2>
+        <ol class="fade-in">
+            <li><strong>Preferred:</strong> reboot into the previous firmware partition, or reinstall the old <code>.out</code> image, then restore the off-box config backup.</li>
+            <li><strong>Hypervisor:</strong> revert the snapshot — only if your libvirt version supports it for this snapshot type. Test this before relying on it.</li>
+        </ol>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">7. Lessons learned</h2>
+        <ul class="fade-in">
+            <li>The CLI install path does exist on FortiGate VMs (<code>execute restore image</code>). The REST route was a workaround, not a requirement.</li>
+            <li>Store admin credentials in a vault; never keep them in plaintext files.</li>
+            <li>Map every advisory to a fixed-in version, severity, and exposure before calling the risk closed.</li>
+            <li>A lab VM without a FortiGuard subscription still has frozen UTM signatures. Refreshing firmware does not fix that.</li>
+        </ul>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">Companion script</h2>
+        <p class="fade-in"><code>fgt-upgrade.sh</code> — REST-method helper (precheck → snapshot → apikey → upgrade → wait → verify → cleanup). The script is a cleaned-up rewrite of the manual steps used in this lab; it has been syntax-checked but not yet run end to end. Full listing in the code block below.</p>
+<div class="diagram fade-in"><pre>#!/usr/bin/env bash
+# fgt-upgrade.sh - in-place FortiOS upgrade helper (REST API method)
+#
+# STATUS: DRAFT FOR REVIEW. Test on a lab VM before any production use.
+# Intended path: FortiGate-VM64-KVM, FortiOS 7.4.x. Not yet run end to end.
+#
+# Steps (each can run alone, or use "run" for all of them):
+#   precheck  verify image checksum, SSH access, save baseline + off-box config
+#   snapshot  optional libvirt disk snapshot (VM only)
+#   apikey    create a temp, IP-restricted API user and store its key (0600)
+#   upgrade   upload the .out image via REST (device reboots itself)
+#   wait      poll until the target build is running
+#   verify    post-upgrade checks, diffed against baseline
+#   cleanup   delete temp API user and key (also runs automatically on error)
+#
+# Secrets: no passwords in this script. Use SSH key auth for the admin user.
+# The API key is written to a 0600 file and is never printed.
+
+set -euo pipefail
+umask 077
+
+# ---------- configuration (override via environment) ----------
+: "\${FGT_HOST:?set FGT_HOST (management IP or FQDN)}"
+FGT_USER="\${FGT_USER:-admin}"
+FGT_SSH_KEY="\${FGT_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+IMAGE="\${IMAGE:-}"                          # path to FGT_VM64_KVM-*.out
+EXPECTED_SHA256="\${EXPECTED_SHA256:-}"      # from Fortinet support portal
+EXPECTED_BUILD="\${EXPECTED_BUILD:-}"        # e.g. 2933
+TRUSTHOST="\${TRUSTHOST:-}"                  # admin workstation IP, e.g. 192.0.2.10
+VIRSH_DOMAIN="\${VIRSH_DOMAIN:-}"            # libvirt domain name (optional)
+FGT_CACERT="\${FGT_CACERT:-}"                # CA/cert PEM to verify the GUI cert
+FGT_INSECURE="\${FGT_INSECURE:-0}"           # 1 = skip TLS verify (LAB ONLY)
+WAIT_TIMEOUT="\${WAIT_TIMEOUT:-1200}"        # seconds to wait for reboot
+API_USER="temp-api-upgrade"
+
+WORKDIR="\${WORKDIR:-./fgt-upgrade-$(date +%Y%m%d-%H%M%S)}"
+KEY_FILE="$WORKDIR/.api_key"
+HDR_FILE="$WORKDIR/.api_hdr"
+mkdir -p "$WORKDIR"
+
+SSH_OPTS=(-i "$FGT_SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+          -o ConnectTimeout=8)
+
+log()  { printf '[%s] %s\\n' "$(date +%T)" "$*"; }
+die()  { log "ERROR: $*" &gt;&amp;2; exit 1; }
+
+fgt() { ssh "\${SSH_OPTS[@]}" "$FGT_USER@$FGT_HOST" "$@"; }
+
+curl_tls() {
+  if [[ -n "$FGT_CACERT" ]]; then
+    curl --cacert "$FGT_CACERT" "$@"
+  elif [[ "$FGT_INSECURE" == "1" ]]; then
+    log "WARNING: TLS verification disabled (FGT_INSECURE=1). Lab use only."
+    curl -k "$@"
+  else
+    curl "$@"
+  fi
+}
+
+need() { command -v "$1" &gt;/dev/null || die "missing required tool: $1"; }
+
+# ---------- steps ----------
+precheck() {
+  need ssh; need curl; need sha256sum
+  [[ -f "$IMAGE" ]] || die "IMAGE not found: '$IMAGE'"
+  [[ -n "$EXPECTED_SHA256" ]] || die "set EXPECTED_SHA256 from the Fortinet portal"
+  [[ -n "$EXPECTED_BUILD" ]]  || die "set EXPECTED_BUILD (target build number)"
+
+  local actual
+  actual="$(sha256sum "$IMAGE" | awk '{print $1}')"
+  [[ "\${actual,,}" == "\${EXPECTED_SHA256,,}" ]] \\
+    || die "SHA256 mismatch. expected=$EXPECTED_SHA256 actual=$actual"
+  log "image checksum OK"
+
+  log "SSH check + baseline"
+  fgt 'get system status'        &gt; "$WORKDIR/baseline_status.txt"
+  fgt 'get system interface'     &gt; "$WORKDIR/baseline_interfaces.txt"
+  fgt 'get firewall policy'      &gt; "$WORKDIR/baseline_policy.txt"
+  # Disable paging so the full config is returned in one go.
+  fgt 'config system console
+set output standard
+end
+show full-configuration'       &gt; "$WORKDIR/config_backup_offbox.conf"
+  [[ -s "$WORKDIR/config_backup_offbox.conf" ]] || die "config backup is empty"
+  log "off-box config saved: $WORKDIR/config_backup_offbox.conf"
+  log "REVIEW: baseline_status.txt for current version and upgrade path."
+}
+
+snapshot() {
+  [[ -n "$VIRSH_DOMAIN" ]] || { log "VIRSH_DOMAIN not set, skipping snapshot"; return; }
+  need virsh
+  local name="pre-upgrade-$(date +%Y%m%d-%H%M)"
+  virsh snapshot-create-as "$VIRSH_DOMAIN" "$name" --disk-only --atomic
+  log "snapshot '$name' created."
+  log "NOTE: libvirt may not revert external snapshots. After the change is"
+  log "      accepted, merge it: virsh blockcommit $VIRSH_DOMAIN &lt;disk&gt; --active --pivot"
+}
+
+apikey() {
+  [[ -n "$TRUSTHOST" ]] || die "set TRUSTHOST (admin workstation IP) to restrict the API key"
+  log "creating temp API user (trusthost $TRUSTHOST)"
+  # api-user trusthost uses the nested form (FortiOS 7.4.1+). The flat "trusthost1" is for admin users.
+  # The optional "config vdom" sub-block is a parse error on FGT-VM 7.4 and is omitted.
+  local out
+  out="$(fgt "config system api-user
+edit \\"$API_USER\\"
+set accprofile \\"super_admin\\"
+config trusthost
+edit 1
+set ipv4-trusthost $TRUSTHOST 255.255.255.255
+next
+end
+next
+end
+execute api-user generate-key $API_USER")"
+  local key
+  key="$(printf '%s\\n' "$out" | sed -n 's/.*New API key:[[:space:]]*\\([^[:space:]]*\\).*/\\1/p' | head -1)"
+  [[ -n "$key" ]] || die "could not capture API key"
+  printf '%s' "$key" &gt; "$KEY_FILE"
+  printf 'Authorization: Bearer %s\\n' "$key" &gt; "$HDR_FILE"   # keeps key off the process list
+  unset out key
+
+  local code
+  code="$(curl_tls -s -o /dev/null -w '%{http_code}' -H "@$HDR_FILE" \\
+          "https://$FGT_HOST/api/v2/monitor/system/status")"
+  [[ "$code" == "200" ]] || die "API auth test failed (HTTP $code)"
+  log "API key works (HTTP 200)"
+}
+
+upgrade() {
+  [[ -f "$HDR_FILE" ]] || die "no API key; run: apikey"
+  log "uploading image; the device will write the inactive partition and reboot"
+  local resp
+  resp="$(curl_tls -s --max-time 900 -H "@$HDR_FILE" \\
+          -F "file=@$IMAGE" -F "source=upload" \\
+          -w '\\nHTTP %{http_code}' \\
+          "https://$FGT_HOST/api/v2/monitor/system/firmware/upgrade")"
+  printf '%s\\n' "$resp" &gt; "$WORKDIR/upgrade_response.txt"
+  grep -q 'HTTP 20[02]' &lt;&lt;&lt;"$resp" || die "upgrade call failed: $resp"
+  log "upgrade accepted"
+}
+
+wait_for_build() {
+  log "waiting up to \${WAIT_TIMEOUT}s for build $EXPECTED_BUILD"
+  local start now out
+  start="$(date +%s)"
+  while :; do
+    sleep 20
+    now="$(date +%s)"
+    (( now - start &gt; WAIT_TIMEOUT )) &amp;&amp; die "timed out waiting for build $EXPECTED_BUILD"
+    if out="$(fgt 'get system status' 2&gt;/dev/null)"; then
+      if grep -Eq "build:?\${EXPECTED_BUILD}" &lt;&lt;&lt;"$out"; then
+        log "device is up on build $EXPECTED_BUILD after $((now - start))s"
+        printf '%s\\n' "$out" &gt; "$WORKDIR/post_status.txt"
+        return
+      fi
+      log "up, but not on target build yet"
+    else
+      log "device down (rebooting)"
+    fi
+  done
+}
+
+verify() {
+  fgt 'get system status'    &gt; "$WORKDIR/post_status.txt"
+  fgt 'get system interface' &gt; "$WORKDIR/post_interfaces.txt"
+  fgt 'get firewall policy'  &gt; "$WORKDIR/post_policy.txt"
+
+  log "version:"; grep -i '^Version' "$WORKDIR/post_status.txt" || true
+  diff -q "$WORKDIR/baseline_interfaces.txt" "$WORKDIR/post_interfaces.txt" &gt;/dev/null \\
+    &amp;&amp; log "interfaces: unchanged" || log "interfaces: DIFFERENT, review diff"
+  diff -q "$WORKDIR/baseline_policy.txt" "$WORKDIR/post_policy.txt" &gt;/dev/null \\
+    &amp;&amp; log "policies:   unchanged" || log "policies:   DIFFERENT, review diff"
+  log "MANUAL: test real traffic, DNS, VPN tunnels, and logging."
+  log "A matching config is not proof that traffic works."
+}
+
+cleanup() {
+  set +e
+  if ssh "\${SSH_OPTS[@]}" "$FGT_USER@$FGT_HOST" 'get system status' &gt;/dev/null 2&gt;&amp;1; then
+    fgt "config system api-user
+delete \\"$API_USER\\"
+end" &gt;/dev/null 2&gt;&amp;1 \\
+      &amp;&amp; log "temp API user removed" \\
+      || log "WARNING: remove '$API_USER' manually (config system api-user)"
+  else
+    log "WARNING: device unreachable; remove '$API_USER' manually once it is back"
+  fi
+  [[ -f "$KEY_FILE" ]] &amp;&amp; { shred -u "$KEY_FILE" 2&gt;/dev/null || rm -f "$KEY_FILE"; }
+  [[ -f "$HDR_FILE" ]] &amp;&amp; { shred -u "$HDR_FILE" 2&gt;/dev/null || rm -f "$HDR_FILE"; }
+}
+
+run_all() {
+  log "Target: $FGT_HOST  image: $IMAGE  build: $EXPECTED_BUILD"
+  read -r -p "Type 'upgrade' to proceed (maintenance window + approval in place?): " ans
+  [[ "$ans" == "upgrade" ]] || die "aborted"
+  trap cleanup EXIT
+  precheck
+  snapshot
+  apikey
+  upgrade
+  # Device reboots; the API user is deleted after the wait via trap/cleanup.
+  wait_for_build
+  verify
+}
+
+usage() { sed -n '2,20p' "$0"; exit 1; }
+
+case "\${1:-}" in
+  precheck) precheck ;;
+  snapshot) snapshot ;;
+  apikey)   apikey ;;
+  upgrade)  upgrade ;;
+  wait)     wait_for_build ;;
+  verify)   verify ;;
+  cleanup)  cleanup ;;
+  run)      run_all ;;
+  *)        usage ;;
+esac
+</pre></div>
+    </section>
+
+    <section class="section">
+        <h2 class="fade-in">Sources</h2>
+        <ul class="fade-in">
+            <li>FortiOS 7.4.13 Release Notes (22 Oct 2026, CVE section) — <a href="https://docs.fortinet.com/document/fortigate/7.4.13/fortios-release-notes/289806" target="_blank" rel="noopener">https://docs.fortinet.com/document/fortigate/7.4.13/fortios-release-notes/289806</a></li>
+            <li>FortiGuard PSIRT advisory FG-IR-25-545 (CVE-2025-54821) — <a href="https://www.fortiguard.com/psirt/FG-IR-25-545" target="_blank" rel="noopener">https://www.fortiguard.com/psirt/FG-IR-25-545</a></li>
+            <li><code>execute restore image</code> — FortiGate 7.4 Admin Guide, "Upgrading individual device firmware" — <a href="https://docs.fortinet.com/document/fortigate/7.4.2/administration-guide/596131/upgrading-individual-device-firmware" target="_blank" rel="noopener">https://docs.fortinet.com/document/fortigate/7.4.2/administration-guide/596131/upgrading-individual-device-firmware</a></li>
+            <li>REST API admin / <code>trusthost</code> — FortiOS 7.4.12 Admin Guide, "REST API administrator" — <a href="https://docs.fortinet.com/document/fortigate/7.4.12/administration-guide/399023/rest-api-administrator" target="_blank" rel="noopener">https://docs.fortinet.com/document/fortigate/7.4.12/administration-guide/399023/rest-api-administrator</a></li>
+        </ul>
+    </section>
+
+    <footer><p>Copyright © 2026 <a href="/">AppoSight</a>. All rights reserved.</p></footer>
+<script>
+        (function(){
+            var h = document.querySelector('.hamburger');
+            var n = document.querySelector('.nav-links');
+            if(h && n){
+                h.addEventListener('click', function(){
+                    h.classList.toggle('active');
+                    n.classList.toggle('open');
+                });
+                n.querySelectorAll('a').forEach(function(l){
+                    l.addEventListener('click', function(){
+                        h.classList.remove('active');
+                        n.classList.remove('open');
+                    });
+                });
+            }
+        })();
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('visible'); });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+        setTimeout(() => { document.querySelectorAll('.fade-in').forEach(el => el.classList.add('visible')); }, 2000);
+    </script>
+<script src="/api/chat-widget.js?v=1" defer></script>
+</body>
+</html>
+`;
+
 const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4806,6 +5272,66 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
         .stat-tag.critical { background: #fff0f0; color: var(--red); }
         .stat-tag.watch { background: #fff8f0; color: var(--orange); }
         .stat-tag.general { background: var(--light-gray); color: var(--gray); }
+        /* Subscribe strip (compact) + modal */
+        .subscribe-strip {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+            background: #141416; border: 1px solid #2a2a2e; border-radius: 14px;
+            padding: 14px 22px; margin: 0 auto 44px; max-width: 860px;
+        }
+        .subscribe-strip-text { flex: 1 1 300px; font-size: 14px; color: #d0d0d5; }
+        .subscribe-strip-btn {
+            flex: 0 0 auto; padding: 11px 20px; border-radius: 9px; border: none;
+            background: #2997ff; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: background 0.2s;
+        }
+        .subscribe-strip-btn:hover { background: #1f7fe0; }
+        .subscribe-form { display: flex; gap: 10px; }
+        .subscribe-form input {
+            flex: 1; min-width: 0; padding: 12px 14px; border-radius: 9px;
+            border: 1px solid #3a3a3e; background: #0f0f11; color: #fff; font-size: 14px; outline: none;
+        }
+        .subscribe-form input:focus { border-color: #2997ff; }
+        .subscribe-form button {
+            padding: 12px 22px; border-radius: 9px; border: none; background: #2997ff; color: #fff;
+            font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+        }
+        .subscribe-form button:hover { background: #1f7fe0; }
+        .subscribe-form button:disabled { opacity: 0.6; cursor: wait; }
+        .subscribe-msg { font-size: 13px; color: #7ee787; margin-top: 10px; }
+        .subscribe-msg:empty { margin-top: 0; }
+        .subscribe-msg.error { color: #ff6b6b; }
+        .sub-modal {
+            position: fixed; inset: 0; z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .sub-modal[hidden] { display: none; }
+        .sub-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.62); }
+        .sub-modal-panel {
+            position: relative; width: min(440px, calc(100vw - 32px));
+            background: #141416; border: 1px solid #2a2a2e; border-radius: 14px;
+            padding: 28px 26px 24px; box-shadow: 0 24px 64px rgba(0,0,0,0.45);
+            animation: subModalIn 0.16s ease-out;
+        }
+        @keyframes subModalIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+        .sub-modal-x {
+            position: absolute; top: 12px; right: 12px; width: 32px; height: 32px;
+            border: none; border-radius: 8px; background: transparent; color: #a1a1a6;
+            font-size: 20px; line-height: 1; cursor: pointer;
+        }
+        .sub-modal-x:hover { background: #222226; color: #fff; }
+        .sub-modal-panel h3 { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
+        .sub-modal-panel > div > p { margin: 0 0 18px; font-size: 13.5px; color: #a1a1a6; line-height: 1.55; }
+        .sub-modal-panel .subscribe-form { flex-direction: column; }
+        .sub-modal-panel .subscribe-form input, .sub-modal-panel .subscribe-form button { flex: 1 1 100%; }
+        .sub-modal-panel .subscribe-msg { flex-basis: 100%; }
+        .sub-done { text-align: center; padding: 10px 0 4px; }
+        .sub-done p { margin: 0 0 18px; }
+        .sub-done button {
+            padding: 11px 28px; border-radius: 9px; border: none;
+            background: #2ea043; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        .sub-done button:hover { background: #268a3a; }
+
         /* Featured briefing */
         .featured-briefing {
             max-width: 800px; margin: 0 auto; padding: 80px 40px 40px;
@@ -4916,6 +5442,10 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
             .nav-links.open { transform: translateX(0); }
             .nav-links a { margin-left: 0; margin-bottom: 24px; font-size: 20px; opacity: 0.85; }
             .briefings-hero { padding: 140px 20px 60px; }
+            .subscribe-strip { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 16px; text-align: center; }
+            .subscribe-strip-text { flex: none; }
+            .subscribe-strip-btn { width: 100%; }
+            .subscribe-form { flex-direction: column; }
             .featured-briefing { padding: 60px 20px 30px; }
             .archive-section { padding: 0 20px 60px; }
             .briefing-card { padding: 24px; }
@@ -4951,6 +5481,27 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
     <div class="briefings-hero">
         <h1>Cybersecurity<br>Briefings.</h1>
         <p>Daily threat intelligence and security analysis. Actionable insights for the modern threat landscape.</p>
+    </div>
+
+    <div class="subscribe-strip" id="subscribeStrip">
+        <span class="subscribe-strip-text">The full daily briefing, delivered to your inbox — free, unsubscribe anytime.</span>
+        <button type="button" class="subscribe-strip-btn" id="subscribeOpenBtn" aria-haspopup="dialog">Subscribe by email</button>
+    </div>
+
+    <div class="sub-modal" id="subscribeModal" role="dialog" aria-modal="true" aria-labelledby="subModalTitle" hidden>
+        <div class="sub-modal-backdrop" data-subclose></div>
+        <div class="sub-modal-panel">
+            <button type="button" class="sub-modal-x" data-subclose aria-label="Close">&times;</button>
+            <div id="subModalBody">
+                <h3 id="subModalTitle">Get the Daily Briefing</h3>
+                <p>One email a day — the full briefing. Click the link we send to confirm; unsubscribe anytime.</p>
+                <form id="subscribeForm" class="subscribe-form" autocomplete="off">
+                    <input type="email" id="subscribeEmail" placeholder="you@company.com" required aria-label="Email address">
+                    <button type="submit" id="subscribeBtn">Subscribe</button>
+                </form>
+                <div id="subscribeMsg" class="subscribe-msg" role="status"></div>
+            </div>
+        </div>
     </div>
 
     <div id="featuredBriefing" class="featured-briefing">
@@ -4998,6 +5549,81 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
             d.textContent = s;
             return d.innerHTML;
         }
+        // Subscribe (daily briefing email) — compact strip + modal
+        (function() {
+            var modal = document.getElementById('subscribeModal');
+            var openBtn = document.getElementById('subscribeOpenBtn');
+            if (!modal || !openBtn) return;
+            var form = document.getElementById('subscribeForm');
+            var email = document.getElementById('subscribeEmail');
+            var btn = document.getElementById('subscribeBtn');
+            var msg = document.getElementById('subscribeMsg');
+            var lastFocus = null;
+            function openModal() {
+                lastFocus = document.activeElement;
+                modal.hidden = false;
+                document.body.style.overflow = 'hidden';
+                setTimeout(function() { email.focus(); }, 30);
+            }
+            function closeModal() {
+                modal.hidden = true;
+                document.body.style.overflow = '';
+                if (lastFocus && lastFocus.focus) lastFocus.focus();
+            }
+            openBtn.addEventListener('click', openModal);
+            modal.querySelectorAll('[data-subclose]').forEach(function(el) {
+                el.addEventListener('click', closeModal);
+            });
+            document.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Escape' && !modal.hidden) closeModal();
+            });
+            form.addEventListener('submit', function(ev) {
+                ev.preventDefault();
+                var value = email.value.trim();
+                if (!value || value.indexOf('@') < 1) {
+                    msg.textContent = 'Please enter a valid email address.';
+                    msg.className = 'subscribe-msg error';
+                    return;
+                }
+                btn.disabled = true;
+                btn.textContent = 'Subscribing...';
+                msg.className = 'subscribe-msg';
+                msg.textContent = '';
+                fetch('/api/subscribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: value })
+                })
+                .then(function(res) {
+                    return res.json().then(function(d) { return { ok: res.ok, d: d }; });
+                })
+                .then(function(r) {
+                    if (r.ok) {
+                        var body = document.getElementById('subModalBody');
+                        if (body) {
+                            body.innerHTML = '<div class="sub-done">'
+                                + '<h3>Almost there</h3>'
+                                + '<p>' + escHtml(r.d.message || 'Check your inbox — one click on the confirmation link activates your subscription.') + '</p>'
+                                + '<button type="button" id="subDoneBtn">Done</button>'
+                                + '</div>';
+                            document.getElementById('subDoneBtn').addEventListener('click', closeModal);
+                        }
+                    } else {
+                        msg.textContent = r.d.error || 'Something went wrong. Please try again.';
+                        msg.className = 'subscribe-msg error';
+                        btn.disabled = false;
+                        btn.textContent = 'Subscribe';
+                    }
+                })
+                .catch(function() {
+                    msg.textContent = 'Network error — please try again in a moment.';
+                    msg.className = 'subscribe-msg error';
+                    btn.disabled = false;
+                    btn.textContent = 'Subscribe';
+                });
+            });
+        })();
+
         async function loadBriefings() {
             var featuredEl = document.getElementById('featuredBriefing');
             var archiveEl = document.getElementById('archiveList');
@@ -5014,18 +5640,21 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
                 var latest = briefings[0];
                 var latestRes = await fetch('/api/briefings/' + latest.date);
                 var latestData = await latestRes.json();
-                renderFeatured(latestData, featuredEl);
+                var hasPlan = false;
+                try { var planRes = await fetch('/api/actions/' + latest.date); hasPlan = planRes.ok; } catch (e2) {}
+                renderFeatured(latestData, featuredEl, hasPlan);
                 renderArchive(briefings.slice(1), archiveEl);
             } catch (e) {
                 featuredEl.innerHTML = '<div class="empty-state"><h3>Unable to load briefings</h3><p>Please try again later.</p></div>';
                 archiveEl.innerHTML = '';
             }
         }
-        function renderFeatured(b, container) {
+        function renderFeatured(b, container, hasPlan) {
             var [y, m, d] = b.date.split('-');
             var date = new Date(+y, +m - 1, +d);
             var dateStr = date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
             var html = '<div class="featured-date">' + dateStr + '</div>';
+            if (hasPlan) html += '<a href="/briefings/actions/' + b.date + '" style="display:inline-block;margin:0 0 28px;padding:10px 18px;border-radius:980px;background:#1d1d1f;color:#fff;text-decoration:none;font-size:14px;font-weight:500;">See the action plan for this briefing &rarr;</a>';
             // High Priority
             if (b.high_priority && b.high_priority.length) {
                 html += '<section class="briefing-section"><h2 class="section-title"><span class="priority-dot red"></span> High Priority</h2>';
@@ -5112,7 +5741,7 @@ const BRIEFINGS_LISTING_HTML = `<!DOCTYPE html>
 </html>`;
 
 // --- Briefing Detail Page Template ---
-function buildBriefingDetailPage(briefing) {
+function buildBriefingDetailPage(briefing, hasPlan) {
     const [y, m, d] = briefing.date.split('-');
     const date = new Date(+y, +m - 1, +d);
     const dateStr = date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -5281,6 +5910,7 @@ function buildBriefingDetailPage(briefing) {
         <a href="/briefings" class="back-link">← All Briefings</a>
         <div class="date-label">${dateStr}</div>
         <h1>Daily Cybersecurity Briefing</h1>
+        ${hasPlan ? `<a href="/briefings/actions/${briefing.date}" style="display:inline-block;margin-top:22px;padding:10px 18px;border-radius:980px;background:#2997ff;color:#fff;text-decoration:none;font-size:14px;font-weight:500;">See the action plan &rarr;</a>` : ''}
     </div>
 
     <div class="briefing-content">
@@ -5341,6 +5971,419 @@ function checkAdminAuth(request, env) {
     }
 }
 
+// =====================================================================
+// Briefing email subscriptions (SUBSCRIBERS KV + Brevo)
+//   POST /api/subscribe                -> pending row + confirmation email
+//   GET  /subscribe/confirm?token=...  -> activate
+//   GET  /subscribe/unsubscribe?token= -> deactivate (CAN-SPAM one-click)
+//   POST /api/digest/send              -> fan out latest briefing (Bearer DIGEST_SEND_KEY)
+// =====================================================================
+const SUB_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const SUB_SITE = 'https://www.apposight.com';
+
+// 48-char hex token from CSPRNG (confirm + unsubscribe links).
+function subGenToken() {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Send one email via Brevo (same pattern as sendAutoReply; never throws).
+async function subSendEmail(env, to, subject, html, text) {
+    const brevoApiKey = env.BREVO_API_KEY;
+    if (!brevoApiKey) {
+        console.warn('sub: BREVO_API_KEY not set - email skipped');
+        return { sent: false, status: 'skipped' };
+    }
+    const timeoutMs = Number(env.BREVO_TIMEOUT_MS) > 0 ? Number(env.BREVO_TIMEOUT_MS) : 8000;
+    try {
+        const res = await fetchWithTimeout('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: { 'api-key': brevoApiKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sender: { name: 'AppoSight', email: env.BREVO_SENDER || 'stanley@apposight.com' },
+                to: [{ email: to, name: to }],
+                subject,
+                htmlContent: html,
+                textContent: text || '',
+            }),
+        }, timeoutMs);
+        if (!res) return { sent: false, status: 'timeout' };
+        if (!res.ok) {
+            let detail = '';
+            try { detail = (await res.text()).slice(0, 200); } catch (e) { /* ignore */ }
+            console.error('sub: Brevo send failed ' + res.status + ' ' + detail);
+            return { sent: false, status: res.status };
+        }
+        return { sent: true, status: res.status };
+    } catch (err) {
+        console.error('sub: Brevo send exception:', err && err.name ? err.name : 'error');
+        return { sent: false, status: 'exception' };
+    }
+}
+
+// Minimal standalone utility page (confirm / unsubscribe results).
+const SUB_PAGE_BASE = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AppoSight — Daily Briefing</title>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0c; color: #e5e5e7; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #141416; border: 1px solid #2a2a2e; border-radius: 16px; padding: 48px 40px; max-width: 480px; width: 90%; text-align: center; }
+    .hex { width: 44px; height: 44px; margin: 0 auto 20px; }
+    h1 { font-size: 21px; margin: 0 0 12px; color: #fff; }
+    p { color: #a1a1a6; font-size: 15px; line-height: 1.6; margin: 0 0 8px; }
+    .foot { margin-top: 32px; font-size: 12px; color: #6e6e73; }
+    .foot a { color: #2997ff; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="card">
+    <svg class="hex" viewBox="0 0 24 24" fill="none"><path d="M12 2l8.66 5v10L12 22l-8.66-5V7L12 2z" stroke="#2997ff" stroke-width="1.5"/><path d="M12 7l4.33 2.5v5L12 17l-4.33-2.5v-5L12 7z" fill="#2997ff" opacity="0.25"/></svg>
+    %BODY%
+    <div class="foot">AppoSight · <a href="https://www.apposight.com/briefings">Read the briefings</a></div>
+</div>
+</body>
+</html>`;
+
+function subPage(title, bodyHtml) {
+    return new Response(SUB_PAGE_BASE.replace('%BODY%', '<h1>' + title + '</h1>' + bodyHtml), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    });
+}
+
+function subBadLinkPage() {
+    return subPage('Link expired or invalid',
+        '<p>That subscription link is not valid. Please subscribe again from the briefings page.</p>');
+}
+
+async function handleSubscribe(request, env, url) {
+    if (!isAllowedContactOrigin(request, url)) {
+        return jsonResponse({ error: 'Invalid origin.' }, 403);
+    }
+    let body;
+    try { body = await request.json(); }
+    catch (e) { return jsonResponse({ error: 'Invalid request.' }, 400); }
+    const email = String((body && body.email) || '').trim().toLowerCase();
+    if (!SUB_EMAIL_RE.test(email) || email.length > 254) {
+        return jsonResponse({ error: 'Please enter a valid email address.' }, 400);
+    }
+    // Per-IP rate limit (existing RATE_LIMIT KV; numeric DO-safe pattern).
+    if (env.RATE_LIMIT) {
+        const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+        const rk = 'sub:' + ip;
+        const cur = Number(await env.RATE_LIMIT.get(rk) || '0');
+        if (cur >= 10) {
+            return jsonResponse({ error: 'Too many attempts. Please try again later.' }, 429);
+        }
+        await env.RATE_LIMIT.put(rk, String(cur + 1), { expirationTtl: 3600 });
+    }
+    if (!env.SUBSCRIBERS) {
+        return jsonResponse({ error: 'Service temporarily unavailable. Please try again.' }, 503);
+    }
+    const now = new Date().toISOString();
+    const sk = email;
+    let existing = null;
+    try {
+        const existingRaw = await env.SUBSCRIBERS.get(sk);
+        if (existingRaw) { try { existing = JSON.parse(existingRaw); } catch (e) { existing = null; } }
+        if (existing && existing.status === 'active') {
+            return jsonResponse({ ok: true, message: 'You\'re already subscribed — keep an eye on your inbox.' });
+        }
+        const token = subGenToken();
+        await env.SUBSCRIBERS.put(sk, JSON.stringify({
+            email: email,
+            token: token,
+            status: 'pending',
+            created_at: (existing && existing.created_at) || now,
+            updated_at: now,
+        }));
+        const confirmUrl = SUB_SITE + '/subscribe/confirm?token=' + token;
+        const html = '<html><body style="margin:0;padding:0;background:#f2f2f4;">' +
+            '<div style="max-width:520px;margin:0 auto;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">' +
+            '<div style="background:#0a0a0c;border-radius:12px;padding:24px 28px;">' +
+            '<div style="font-size:18px;font-weight:700;color:#fff;">AppoSight</div>' +
+            '<div style="font-size:14px;color:#8e8e93;margin-top:4px;">Daily Cybersecurity Briefing</div></div>' +
+            '<div style="background:#fff;border-radius:0 0 12px 12px;padding:28px;">' +
+            '<div style="font-size:16px;font-weight:600;color:#1d1d1f;margin-bottom:10px;">Almost there — confirm your subscription</div>' +
+            '<p style="font-size:14px;color:#515154;line-height:1.6;margin:0 0 20px;">Click the button below to start receiving the full daily cybersecurity briefing in your inbox.</p>' +
+            '<div style="text-align:center;margin:0 0 20px;"><a href="' + confirmUrl + '" style="display:inline-block;background:#2997ff;color:#fff;text-decoration:none;padding:13px 30px;border-radius:10px;font-size:15px;font-weight:600;">Confirm subscription</a></div>' +
+            '<p style="font-size:12px;color:#8e8e93;line-height:1.6;margin:0;">Or paste this link into your browser:<br><a href="' + confirmUrl + '" style="color:#2997ff;word-break:break-all;">' + confirmUrl + '</a></p>' +
+            '<p style="font-size:12px;color:#b0b0b5;line-height:1.6;margin:16px 0 0;">If you did not request this, you can ignore this email — you will not be subscribed.</p>' +
+            '</div></div></body></html>';
+        const text = 'Confirm your AppoSight daily briefing subscription:\n' + confirmUrl + '\n';
+        const sendResult = await subSendEmail(env, email, 'Confirm your AppoSight daily briefing subscription', html, text);
+        if (!sendResult.sent) {
+            // Row is pending with no confirmation email out — be honest about it.
+            console.error('sub: confirmation email not sent: ' + sendResult.status);
+            return jsonResponse({ error: 'We could not deliver the confirmation email. Please try again shortly.' }, 502);
+        }
+        return jsonResponse({ ok: true, message: 'Check your inbox — click the confirmation link to activate your subscription.' });
+    } catch (err) {
+        console.error('sub: KV error:', err && err.message);
+        return jsonResponse({ error: 'Service temporarily unavailable. Please try again.' }, 503);
+    }
+}
+
+async function handleSubscribeConfirm(url, env) {
+    const token = url.searchParams.get('token') || '';
+    if (!/^[a-f0-9]{32,}$/i.test(token)) return subBadLinkPage();
+    if (!env.SUBSCRIBERS) {
+        return subPage('Something went wrong', '<p>We could not activate the subscription. Please subscribe again.</p>');
+    }
+    let entry = null;
+    try {
+        const listing = await env.SUBSCRIBERS.list();
+        for (const k of (listing.keys || [])) {
+            const raw = await env.SUBSCRIBERS.get(k.name);
+            let v = null;
+            try { v = JSON.parse(raw); } catch (e) { continue; }
+            if (v && v.token === token) { entry = { key: k.name, value: v }; break; }
+        }
+    } catch (err) {
+        console.error('sub confirm: KV error:', err && err.message);
+        return subPage('Something went wrong', '<p>We could not activate the subscription. Please subscribe again.</p>');
+    }
+    if (!entry) return subBadLinkPage();
+    try {
+        entry.value.status = 'active';
+        entry.value.updated_at = new Date().toISOString();
+        await env.SUBSCRIBERS.put(entry.key, JSON.stringify(entry.value));
+    } catch (err) {
+        console.error('sub confirm: KV update error:', err && err.message);
+        return subPage('Something went wrong', '<p>We could not activate the subscription. Please subscribe again.</p>');
+    }
+    return subPage('You\'re subscribed',
+        '<p>The full daily cybersecurity briefing will now arrive in your inbox every day.</p>' +
+        '<p>You can unsubscribe at any time using the link in the footer of any email.</p>');
+}
+
+async function handleSubscribeUnsubscribe(url, env) {
+    const token = url.searchParams.get('token') || '';
+    if (!/^[a-f0-9]{32,}$/i.test(token)) return subBadLinkPage();
+    if (!env.SUBSCRIBERS) {
+        return subPage('Something went wrong', '<p>We could not process the unsubscribe. Please try again.</p>');
+    }
+    let entry = null;
+    try {
+        const listing = await env.SUBSCRIBERS.list();
+        for (const k of (listing.keys || [])) {
+            const raw = await env.SUBSCRIBERS.get(k.name);
+            let v = null;
+            try { v = JSON.parse(raw); } catch (e) { continue; }
+            if (v && v.token === token) { entry = { key: k.name, value: v }; break; }
+        }
+        if (!entry) return subBadLinkPage();
+        entry.value.status = 'unsubscribed';
+        entry.value.updated_at = new Date().toISOString();
+        await env.SUBSCRIBERS.put(entry.key, JSON.stringify(entry.value));
+    } catch (err) {
+        console.error('sub unsubscribe: KV error:', err && err.message);
+        return subPage('Something went wrong', '<p>We could not process the unsubscribe. Please try again.</p>');
+    }
+    return subPage('You\'ve been unsubscribed',
+        '<p>You will no longer receive the AppoSight daily briefing by email.</p>' +
+        '<p>You can still read all briefings on the website.</p>');
+}
+
+// Render the full daily briefing as an email (HTML + plain text).
+// `__UNSUB__` is replaced with the recipient's personal link by the caller.
+function renderDigestEmail(b) {
+    let dateLabel = b.date || '';
+    const dm = String(b.date || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (dm) {
+        const dt = new Date(+dm[1], +dm[2] - 1, +dm[3]);
+        dateLabel = dt.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    }
+    const section = (label, color, arr) => {
+        if (!arr || !arr.length) return '';
+        const items = arr.map((it) =>
+            '<div style="background:#f7f7f8;border-left:3px solid ' + color + ';border-radius:6px;padding:14px 16px;margin:0 0 10px;">' +
+            '<div style="font-size:14px;font-weight:600;color:#1d1d1f;line-height:1.45;">' + escHtml(it.title || '') + '</div>' +
+            (it.summary ? '<div style="font-size:13px;color:#515154;line-height:1.55;margin-top:6px;">' + escHtml(it.summary) + '</div>' : '') +
+            '</div>'
+        ).join('');
+        return '<div style="margin:26px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:' + color + ';text-transform:uppercase;">' + label + '</div>' + items;
+    };
+    const html = '<html><body style="margin:0;padding:0;background:#f2f2f4;">' +
+        '<div style="max-width:600px;margin:0 auto;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="background:#0a0a0c;border-radius:12px 12px 0 0;padding:24px 28px;">' +
+        '<div style="font-size:18px;font-weight:700;color:#fff;">AppoSight</div>' +
+        '<div style="font-size:14px;color:#8e8e93;margin-top:4px;">Daily Cybersecurity Briefing — ' + escHtml(dateLabel) + '</div>' +
+        '</div>' +
+        '<div style="background:#ffffff;border-radius:0 0 12px 12px;padding:8px 28px 24px;">' +
+        section('High Priority', '#d70015', b.high_priority) +
+        section('Watch', '#b25e00', b.watch) +
+        section('General Updates', '#515154', b.general) +
+        '<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e5e7;font-size:12px;color:#8e8e93;line-height:1.7;">' +
+        'You\'re receiving this because you subscribed to the AppoSight daily briefing.<br>' +
+        '<a href="https://www.apposight.com/briefings" style="color:#2997ff;">Read the full archive</a> &middot; <a href="__UNSUB__" style="color:#515154;">Unsubscribe</a>' +
+        '</div>' +
+        '</div></div></body></html>';
+    let text = 'AppoSight — Daily Cybersecurity Briefing — ' + dateLabel + '\n\n';
+    const tsec = (label, arr) => {
+        if (!arr || !arr.length) return '';
+        return label + '\n' + arr.map((it) => '• ' + (it.title || '') + (it.summary ? ' — ' + it.summary : '')).join('\n') + '\n\n';
+    };
+    text += tsec('HIGH PRIORITY', b.high_priority);
+    text += tsec('WATCH', b.watch);
+    text += tsec('GENERAL UPDATES', b.general);
+    text += 'Read the full archive: https://www.apposight.com/briefings\nUnsubscribe: __UNSUB__\n';
+    const subject = 'Daily Cybersecurity Briefing — ' + dateLabel;
+    return { html, text, subject };
+}
+
+async function handleDigestSend(request, env) {
+    const key = env.DIGEST_SEND_KEY;
+    if (!key) return jsonResponse({ error: 'Digest sending is not configured.' }, 503);
+    const auth = (request.headers.get('authorization') || '').trim();
+    const provided = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
+    if (provided.length !== key.length || provided !== key) {
+        return jsonResponse({ error: 'Unauthorized.' }, 401);
+    }
+    // Latest published briefing from the BRIEFINGS KV.
+    let index = null;
+    try {
+        const idxRaw = await env.BRIEFINGS.get('briefings_index');
+        if (!idxRaw) return jsonResponse({ error: 'No briefings published yet.' }, 404);
+        index = JSON.parse(idxRaw);
+    } catch (err) {
+        console.error('digest: bad briefings_index:', err && err.message);
+        return jsonResponse({ error: 'Could not read the briefing index.' }, 500);
+    }
+    const latest = Array.isArray(index) ? index[0] : null;
+    if (!latest || !latest.date) return jsonResponse({ error: 'No latest briefing found.' }, 404);
+    let briefing = null;
+    try {
+        const raw = await env.BRIEFINGS.get(latest.date);
+        if (!raw) return jsonResponse({ error: 'Latest briefing entry is missing.' }, 404);
+        briefing = JSON.parse(raw);
+    } catch (err) {
+        console.error('digest: bad briefing entry:', err && err.message);
+        return jsonResponse({ error: 'Could not read the latest briefing.' }, 500);
+    }
+    // Active subscribers (dedicated SUBSCRIBERS KV; key = lowercased email).
+    if (!env.SUBSCRIBERS) {
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    let rows = [];
+    try {
+        const listing = await env.SUBSCRIBERS.list();
+        for (const k of (listing.keys || [])) {
+            const raw = await env.SUBSCRIBERS.get(k.name);
+            let v = null;
+            try { v = JSON.parse(raw); } catch (e) { continue; }
+            if (v && v.status === 'active' && v.email && v.token) {
+                rows.push({ email: v.email, token: v.token, created_at: v.created_at || '' });
+            }
+        }
+        rows.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+    } catch (err) {
+        console.error('digest: KV error:', err && err.message);
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    if (!rows.length) {
+        return jsonResponse({ ok: true, date: latest.date, total: 0, sent: 0, failed: 0,
+            message: 'No active subscribers.' });
+    }
+    const cap = Number(env.DIGEST_MAX_RECIPIENTS) > 0 ? Number(env.DIGEST_MAX_RECIPIENTS) : 1000;
+    const recipients = rows.slice(0, cap);
+    const digest = renderDigestEmail(briefing);
+    let sent = 0, failed = 0;
+    for (const r of recipients) {
+        const unsubUrl = SUB_SITE + '/subscribe/unsubscribe?token=' + r.token;
+        const res = await subSendEmail(env, r.email, digest.subject,
+            digest.html.split('__UNSUB__').join(unsubUrl),
+            digest.text.split('__UNSUB__').join(unsubUrl));
+        if (res.sent) sent += 1; else failed += 1;
+    }
+    return jsonResponse({ ok: failed === 0, date: latest.date, total: recipients.length,
+        sent, failed, message: 'Digest for ' + latest.date + ': ' + sent + '/' + recipients.length + ' sent.' });
+}
+
+// Read-only subscriber listing (bearer DIGEST_SEND_KEY; no side effects).
+async function handleSubscriberList(request, env) {
+    const key = env.DIGEST_SEND_KEY;
+    if (!key) return jsonResponse({ error: 'Digest sending is not configured.' }, 503);
+    const auth = (request.headers.get('authorization') || '').trim();
+    const provided = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
+    if (provided.length !== key.length || provided !== key) {
+        return jsonResponse({ error: 'Unauthorized.' }, 401);
+    }
+    if (!env.SUBSCRIBERS) {
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    const subs = [];
+    try {
+        const listing = await env.SUBSCRIBERS.list();
+        for (const k of (listing.keys || [])) {
+            const raw = await env.SUBSCRIBERS.get(k.name);
+            let v = null;
+            try { v = JSON.parse(raw); } catch (e) { continue; }
+            if (v && v.email) {
+                subs.push({ email: v.email, status: v.status || 'unknown',
+                    created_at: v.created_at || '', updated_at: v.updated_at || '' });
+            }
+        }
+    } catch (err) {
+        console.error('subscribers list: KV error:', err && err.message);
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    subs.sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0));
+    return jsonResponse({ ok: true, total: subs.length, subscribers: subs });
+}
+
+// Key-protected status flip for one subscriber (admin path when a
+// token link is unavailable, e.g. old email or mangled link).
+async function handleSubscriberSetStatus(request, env) {
+    const key = env.DIGEST_SEND_KEY;
+    if (!key) return jsonResponse({ error: 'Digest sending is not configured.' }, 503);
+    const auth = (request.headers.get('authorization') || '').trim();
+    const provided = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
+    if (provided.length !== key.length || provided !== key) {
+        return jsonResponse({ error: 'Unauthorized.' }, 401);
+    }
+    let body;
+    try { body = await request.json(); }
+    catch (e) { return jsonResponse({ error: 'Invalid request.' }, 400); }
+    const email = String((body && body.email) || '').trim().toLowerCase();
+    const status = String((body && body.status) || '').trim();
+    if (!SUB_EMAIL_RE.test(email) || email.length > 254) {
+        return jsonResponse({ error: 'Please enter a valid email address.' }, 400);
+    }
+    if (!['pending', 'active', 'unsubscribed'].includes(status)) {
+        return jsonResponse({ error: 'Invalid status.' }, 400);
+    }
+    if (!env.SUBSCRIBERS) {
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    let raw = null;
+    try { raw = await env.SUBSCRIBERS.get(email); }
+    catch (err) {
+        console.error('sub setStatus: KV read error:', err && err.message);
+        return jsonResponse({ error: 'Could not read subscribers.' }, 503);
+    }
+    if (!raw) return jsonResponse({ ok: true, email, found: false, message: 'No record for this email.' });
+    let v = null;
+    try { v = JSON.parse(raw); } catch (e) { v = null; }
+    if (!v || !v.email) {
+        return jsonResponse({ error: 'Record for this email is corrupt.' }, 500);
+    }
+    const before = v.status || 'unknown';
+    v.status = status;
+    v.updated_at = new Date().toISOString();
+    try {
+        await env.SUBSCRIBERS.put(email, JSON.stringify(v));
+    } catch (err) {
+        console.error('sub setStatus: KV write error:', err && err.message);
+        return jsonResponse({ error: 'Could not update subscriber.' }, 503);
+    }
+    return jsonResponse({ ok: true, email, found: true, before, after: status,
+        message: email + ': ' + before + ' -> ' + status });
+}
+
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
@@ -5351,6 +6394,26 @@ export default {
                 return jsonResponse({ error: 'Invalid origin.' }, 403);
             }
             return handleContactForm(request, env);
+        }
+
+        // Briefing subscription endpoints
+        if (url.pathname === '/api/subscribe' && request.method === 'POST') {
+            return handleSubscribe(request, env, url);
+        }
+        if (url.pathname === '/subscribe/confirm' && request.method === 'GET') {
+            return handleSubscribeConfirm(url, env);
+        }
+        if (url.pathname === '/subscribe/unsubscribe' && request.method === 'GET') {
+            return handleSubscribeUnsubscribe(url, env);
+        }
+        if (url.pathname === '/api/digest/send' && request.method === 'POST') {
+            return handleDigestSend(request, env);
+        }
+        if (url.pathname === '/api/digest/subscribers' && request.method === 'GET') {
+            return handleSubscriberList(request, env);
+        }
+        if (url.pathname === '/api/digest/set-status' && request.method === 'POST') {
+            return handleSubscriberSetStatus(request, env);
         }
 
         // Handle admin dashboard
@@ -5451,6 +6514,20 @@ export default {
             return new Response(AKS_EMPLOYEE_PORTAL_HTML, {
                 headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
             });
+        }
+
+        if (url.pathname === '/use-cases/fgt-upgrade' || url.pathname === '/Use-Cases/fgt-upgrade'
+            || url.pathname === '/use-cases/fgt-upgrade/' || url.pathname === '/Use-Cases/fgt-upgrade/') {
+            return new Response(FGT_UPGRADE_CASE_HTML, {
+                headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+            });
+        }
+
+        // Daily Action Plan pages + API (src/actions.js). Must run before the
+        // generic /briefings/<date> matcher below, which would grab /briefings/actions/<date>.
+        if (url.pathname.startsWith('/briefings/actions') || url.pathname.startsWith('/api/actions')) {
+            const actionsResp = await handleActions(url, request, env);
+            if (actionsResp) return actionsResp;
         }
 
         // Handle briefings listing page
@@ -5921,7 +6998,7 @@ async function handleBriefingDetail(dateSlug, env) {
             return new Response('Briefing not found', { status: 404 });
         }
         const briefing = JSON.parse(raw);
-        const html = buildBriefingDetailPage(briefing);
+        const html = buildBriefingDetailPage(briefing, await hasActionPlan(env, dateSlug));
         return new Response(html, {
             headers: {
                 'Content-Type': 'text/html; charset=utf-8',
@@ -6316,4 +7393,5 @@ async function handlePublishWeeklyAnalysis(request, env) {
 
 // TEST-ONLY named exports (used by worker/tests.js; ignored by the worker
 // runtime, which dispatches via the default export).
-export { sendBrevoNotification, sendAutoReply, fetchWithTimeout, isAllowedContactOrigin, handleContactForm };
+export { sendBrevoNotification, sendAutoReply, fetchWithTimeout, isAllowedContactOrigin, handleContactForm,
+    handleSubscribe, handleSubscribeConfirm, handleSubscribeUnsubscribe, handleDigestSend, handleSubscriberList, handleSubscriberSetStatus, renderDigestEmail, subGenToken, SUB_EMAIL_RE };
